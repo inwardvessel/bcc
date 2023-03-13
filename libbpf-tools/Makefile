@@ -50,6 +50,7 @@ APPS = \
 	drsnoop \
 	execsnoop \
 	exitsnoop \
+	experiment \
 	filelife \
 	filetop \
 	fsdist \
