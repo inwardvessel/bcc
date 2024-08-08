@@ -51,6 +51,7 @@ APPS = \
 	capable \
 	cpudist \
 	cpufreq \
+	csdlatency \
 	drsnoop \
 	execsnoop \
 	exitsnoop \
