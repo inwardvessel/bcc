@@ -17,7 +17,9 @@ extern void generic_smp_call_function_single_interrupt(void) __ksym;
 static const __u32 percpu_key = 0;
 
 const volatile unsigned int nr_cpus = 1;
-const volatile __u64 max_ipi_dispatch_ms = 1000;
+const volatile __u64 csd_ipi_response_threshold_ms = 1000;
+const volatile __u64 csd_dispatch_threshold_ms = 1000;
+const volatile __u64 csd_func_threshold_ms = 1000;
 
 struct csd_queue_key {
 	unsigned int cpu;
@@ -51,11 +53,6 @@ struct {
 	__type(key, u32);
 	__type(value, u64);
 } ipi_dispatch_map SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_STACK_TRACE);
-	__type(key, u32);
-} stacks SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -137,6 +134,17 @@ int handle_csd_function_exit(struct trace_event_raw_csd_function *ctx)
 		slot = MAX_SLOTS - 1;
 	__sync_fetch_and_add(&csd_func_hist[slot], 1);
 
+	if (dt >= csd_func_threshold_ms * 1000) {
+		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+		if (!e)
+			return 0;
+
+		e->type = CSD_FUNC_LATENCY;
+		e->t = dt;
+		e->func = (u64)ctx->func;
+		bpf_ringbuf_submit(e, 0);
+	}
+
 	return 0;
 }
 
@@ -190,7 +198,7 @@ int handle_ipi_send_cpumask(struct bpf_raw_tracepoint_args *ctx)
 }
 
 SEC("fentry/generic_smp_call_function_single_interrupt")
-int handle_call_function_single_entry(void)
+int handle_call_function_single_entry(void *ctx)
 {
 	u64 *t0, t1, slot;
 	s64 dt;
@@ -213,6 +221,17 @@ int handle_call_function_single_entry(void)
 
 	bpf_map_update_elem(&ipi_dispatch_map, &percpu_key, &t1, BPF_ANY);
 
+	if (dt >= csd_ipi_response_threshold_ms * 1000) {
+		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+		if (!e)
+			goto cleanup;
+
+		e->type = CSD_IPI_RESPONSE_LATENCY;
+		e->t = dt;
+		e->cpu = cpu;
+		bpf_ringbuf_submit(e, 0);
+	}
+
 cleanup:
 	bpf_map_delete_elem(&ipi_send_map, &cpu);
 	return 0;
@@ -223,7 +242,6 @@ int handle_call_function_single_exit(void *ctx)
 {
 	u64 *t0, t1, slot;
 	s64 dt;
-	int ret = 0;
 
 	t1 = bpf_ktime_get_ns();
 	t0 = bpf_map_lookup_elem(&ipi_dispatch_map, &percpu_key);
@@ -239,17 +257,17 @@ int handle_call_function_single_exit(void *ctx)
 		slot = MAX_SLOTS - 1;
 	__sync_fetch_and_add(&ipi_hist[slot], 1);
 
-	if (dt >= max_ipi_dispatch_ms * 1000) {
+	if (dt >= csd_dispatch_threshold_ms * 1000) {
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-		if (e) {
-			e->t = dt,
-			e->stack_len = bpf_get_stack(ctx, e->stack, sizeof(e->stack), 0);
-			bpf_ringbuf_submit(e, 0);
-	bpf_printk("stack len: %u\n", e->stack_len);
-		}
+		if (!e)
+			return 0;
+
+		e->type = CSD_DISPATCH_LATENCY;
+		e->t = dt;
+		e->stack_sz = bpf_get_stack(ctx, e->stack, sizeof(e->stack), 0);
+		bpf_ringbuf_submit(e, 0);
 	}
 
-out:
 	return 0;
 }
 

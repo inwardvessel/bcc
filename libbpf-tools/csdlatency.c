@@ -8,13 +8,19 @@
 #include "trace_helpers.h"
 
 static struct env {
-	__u64 max_ipi_dispatch_ms;
-	int perf_max_stack_depth;
-	unsigned int stack_map_max_entries;
+	int interval; /* dump histograms every N seconds */
+	int nr_intervals; /* exit program after N intervals, ignore if negative */
+	int perf_max_stack_depth; /* kernel.perf_event_max_stack */
+	__u64 csd_ipi_response_threshold_ms; /* show stack when threshold time exceeded */
+	__u64 csd_dispatch_threshold_ms;
+	__u64 csd_func_threshold_ms;
 } env = {
-	.max_ipi_dispatch_ms = 5,
+	.interval = 5,
+	.nr_intervals = -1,
 	.perf_max_stack_depth = 127,
-	.stack_map_max_entries = 10240,
+	.csd_ipi_response_threshold_ms = 1,
+	.csd_dispatch_threshold_ms = 1,
+	.csd_func_threshold_ms = 1,
 };
 
 static struct ksyms *ksyms;
@@ -26,14 +32,34 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 
 static int event_handler(void *ctx, void *data, size_t sz)
 {
-	printf("got event\n");
 	struct event *event = (struct event *)data;
-	size_t i;
 
-	for (i = 0; i < event->stack_len; ++i) {
-		const uint64_t addr = event->stack[i];
-		const struct ksym *ksym = ksyms__map_addr(ksyms, addr);
-		printf("%zu: %s\n", i, ksym->name);
+	switch (event->type) {
+		case CSD_IPI_RESPONSE_LATENCY:
+			printf("csd ipi response latency event\n");
+			printf("\tthreshold exceeded on cpu %u\n", event->cpu);
+			break;
+		case CSD_DISPATCH_LATENCY:
+			size_t i;
+
+			printf("csd dispatch latency event\n");
+			printf("\t delayed stack below\n");
+
+			for (i = 0; i < event->stack_sz / sizeof(event->stack[0]); ++i) {
+				const uint64_t addr = event->stack[i];
+				const struct ksym *ksym = ksyms__map_addr(ksyms, addr);
+				printf("%zu: %s\n", i, ksym->name);
+			}
+
+			break;
+		case CSD_FUNC_LATENCY:
+			const struct ksym *ksym = ksyms__map_addr(ksyms, event->func);
+			printf("csd func latency event\n");
+			printf("\tthreshold exceeded on %s %llx\n", ksym->name, event->func);
+			break;
+		default:
+			printf("unknown event\n");
+			break;
 	}
 
 	return 0;
@@ -59,11 +85,9 @@ int main(int argc, char **argv)
 	}
 
 	skel->rodata->nr_cpus = 16;
-	skel->rodata->max_ipi_dispatch_ms = env.max_ipi_dispatch_ms;
-
-	bpf_map__set_value_size(skel->maps.stacks,
-				env.perf_max_stack_depth * sizeof(unsigned long));
-	bpf_map__set_max_entries(skel->maps.stacks, env.stack_map_max_entries);
+	skel->rodata->csd_ipi_response_threshold_ms = env.csd_ipi_response_threshold_ms;
+	skel->rodata->csd_dispatch_threshold_ms = env.csd_dispatch_threshold_ms;
+	skel->rodata->csd_func_threshold_ms = env.csd_func_threshold_ms;
 
 	err = csdlatency_bpf__load(skel);
 	if (err) {
