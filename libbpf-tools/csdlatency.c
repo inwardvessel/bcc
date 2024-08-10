@@ -10,17 +10,17 @@
 static struct env {
 	int interval; /* dump histograms every N seconds */
 	int nr_intervals; /* exit program after N intervals, ignore if negative */
-	int perf_max_stack_depth; /* kernel.perf_event_max_stack */
-	__u64 csd_ipi_response_threshold_ms; /* show stack when threshold time exceeded */
-	__u64 csd_dispatch_threshold_ms;
-	__u64 csd_func_threshold_ms;
+	int perf_max_stack_depth;
+	__u64 csd_ipi_response_threshold_ms; /* report remote cpu when time exceeded */
+	__u64 csd_dispatch_threshold_ms; /* report stacks interrupted when time exceeded */
+	__u64 csd_func_threshold_ms; /* report csd funcs that exceed this time */
 } env = {
 	.interval = 5,
 	.nr_intervals = -1,
-	.perf_max_stack_depth = 127,
-	.csd_ipi_response_threshold_ms = 1,
-	.csd_dispatch_threshold_ms = 1,
-	.csd_func_threshold_ms = 1,
+	.perf_max_stack_depth = 127, /* from sysctl kernel.perf_event_max_stack */
+	.csd_ipi_response_threshold_ms = 500,
+	.csd_dispatch_threshold_ms = 500,
+	.csd_func_threshold_ms = 500,
 };
 
 static struct ksyms *ksyms;
@@ -68,6 +68,7 @@ static int event_handler(void *ctx, void *data, size_t sz)
 int main(int argc, char **argv)
 {
 	struct csdlatency_bpf *skel;
+	struct ring_buffer *rb;
 	int err;
 
 	ksyms = ksyms__load();
@@ -101,17 +102,23 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.events), event_handler, NULL, NULL);
+	rb = ring_buffer__new(bpf_map__fd(skel->maps.events), event_handler, NULL, NULL);
+	if (!rb) {
+		fprintf(stderr, "failed to create bpf ring buffer\n");
+		goto cleanup;
+	}
 
 	ring_buffer__poll(rb, 1000 /* timeout ms */);
 
-	//printf("latency of function queue time to remote function start time\n");
-	//print_log2_hist(skel->bss->csd_queue_hist, MAX_SLOTS, "nsec");
-	//printf("latency of total time spend in remote IPI callback\n");
-	//print_log2_hist(skel->bss->ipi_hist, MAX_SLOTS, "nsec");
-	//printf("latency of individual functions dispatched within a single IPI callback\n");
-	//print_log2_hist(skel->bss->csd_func_hist, MAX_SLOTS, "nsec");
+	printf("latency of function queue time to remote function start time\n");
+	print_log2_hist(skel->bss->csd_queue_hist, MAX_SLOTS, "nsec");
+	printf("latency of total time spend in remote IPI callback\n");
+	print_log2_hist(skel->bss->ipi_hist, MAX_SLOTS, "nsec");
+	printf("latency of individual functions dispatched within a single IPI callback\n");
+	print_log2_hist(skel->bss->csd_func_hist, MAX_SLOTS, "nsec");
 
+	if (rb)
+		ring_buffer__free(rb);
 cleanup:
 	csdlatency_bpf__destroy(skel);
 	return -err;
