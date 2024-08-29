@@ -85,10 +85,11 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	skel->rodata->nr_cpus = 16;
 	skel->rodata->csd_ipi_response_threshold_ms = env.csd_ipi_response_threshold_ms;
 	skel->rodata->csd_dispatch_threshold_ms = env.csd_dispatch_threshold_ms;
 	skel->rodata->csd_func_threshold_ms = env.csd_func_threshold_ms;
+
+	bpf_map__set_max_entries(skel->maps.csd_queue_map, libbpf_num_possible_cpus() * 2);
 
 	err = csdlatency_bpf__load(skel);
 	if (err) {
@@ -111,14 +112,15 @@ int main(int argc, char **argv)
 	ring_buffer__poll(rb, 1000 /* timeout ms */);
 
 	printf("latency of function queue time to remote function start time\n");
-	print_log2_hist(skel->bss->csd_queue_hist, MAX_SLOTS, "nsec");
+	print_log2_hist(skel->bss->queue_hist, MAX_SLOTS, "nsec");
 	printf("latency of total time spend in remote IPI callback\n");
 	print_log2_hist(skel->bss->ipi_hist, MAX_SLOTS, "nsec");
 	printf("latency of individual functions dispatched within a single IPI callback\n");
-	print_log2_hist(skel->bss->csd_func_hist, MAX_SLOTS, "nsec");
+	print_log2_hist(skel->bss->func_hist, MAX_SLOTS, "nsec");
 
 	if (rb)
 		ring_buffer__free(rb);
+
 cleanup:
 	csdlatency_bpf__destroy(skel);
 	return -err;

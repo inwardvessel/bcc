@@ -2,6 +2,7 @@
 // Copyright (c) 2024 Meta Platforms, Inc. and affiliates.
 #include "<vmlinux.h>"
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
 #include <errno.h>
 #include "csdlatency.h"
 #include "bits.bpf.h"
@@ -16,7 +17,7 @@ extern void generic_smp_call_function_single_interrupt(void) __ksym;
 /* key for single element percpu arrays */
 static const __u32 percpu_key = 0;
 
-const volatile unsigned int nr_cpus = 1;
+const volatile __u64 call_threshold_ms = 1000;
 const volatile __u64 csd_ipi_response_threshold_ms = 1000;
 const volatile __u64 csd_dispatch_threshold_ms = 1000;
 const volatile __u64 csd_func_threshold_ms = 1000;
@@ -25,6 +26,13 @@ struct csd_queue_key {
 	unsigned int cpu;
 	void *func;
 };
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u64);
+} call_start_map SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -59,17 +67,80 @@ struct {
 	__uint(max_entries, 256 * 1024);
 } events SEC(".maps");
 
-/* time from func enqueue to func entry */
-__u32 csd_queue_hist[MAX_SLOTS] = {};
-/* time spent in func */
-__u32 csd_func_hist[MAX_SLOTS] = {};
+/* time from csd func enqueue to func entry */
+__u32 queue_hist[MAX_SLOTS] = {};
+
+/* time from csd func entry to func exit */
+__u32 func_hist[MAX_SLOTS] = {};
+
 /* time from ipi send to interrupt handler */
 __u32 ipi_hist[MAX_SLOTS] = {};
+
+__u32 sync_local_hist[MAX_SLOTS] = {};
+__u32 sync_remote_hist[MAX_SLOTS] = {};
+__u32 async_local_hist[MAX_SLOTS] = {};
+__u32 async_remote_hist[MAX_SLOTS] = {};
 
 struct update_ipi_ctx {
 	u64 t;
 	struct bpf_cpumask *cpumask;
 };
+
+SEC("fentry/smp_call_function_single")
+int BPF_PROG(handle_smp_call_function_single_entry, int cpu, smp_call_func_t func, void *info, int wait)
+{
+	const u64 t = bpf_ktime_get_ns();
+
+	bpf_map_update_elem(&call_start_map, &percpu_key, &t, BPF_ANY);
+
+	return 0;
+}
+
+SEC("fexit/smp_call_function_single")
+int BPF_PROG(handle_smp_call_function_single_exit, int cpu, smp_call_func_t func, void *info, int wait)
+{
+	u64 *t0, t1, slot;
+	s64 dt;
+
+	t1 =  bpf_ktime_get_ns();
+	t0 = bpf_map_lookup_elem(&call_start_map, &percpu_key);
+	if (!t0)
+		return 0;
+
+	dt = (s64)(t1 - *t0);
+	if (dt < 0)
+		return 0;
+
+	slot = log2(dt);
+	if (slot >= MAX_SLOTS)
+		slot = MAX_SLOTS - 1;
+
+	if (cpu == bpf_get_smp_processor_id()) {
+		if (wait)
+			__sync_fetch_and_add(&sync_local_hist[slot], 1);
+		else
+			__sync_fetch_and_add(&async_local_hist[slot], 1);
+	} else {
+		if (wait)
+			__sync_fetch_and_add(&sync_remote_hist[slot], 1);
+		else
+			__sync_fetch_and_add(&async_remote_hist[slot], 1);
+	}
+
+	if (dt >= call_threshold_ms * 1000) {
+		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+		if (!e)
+			return 0;
+
+		e->type = CSD_FUNC_LATENCY;
+		e->t = dt;
+		//e->func = (u64)func;
+		bpf_probe_read_kernel(&e->func, sizeof(e->func), &ctx[1]);
+		bpf_ringbuf_submit(e, 0);
+	}
+
+	return 0;
+}
 
 SEC("tracepoint/csd/csd_queue_cpu")
 int handle_csd_queue(struct trace_event_raw_csd_queue_cpu *ctx)
@@ -105,7 +176,7 @@ int handle_csd_function_entry(struct trace_event_raw_csd_function *ctx)
 	slot = log2(dt);
 	if (slot >= MAX_SLOTS)
 		slot = MAX_SLOTS - 1;
-	__sync_fetch_and_add(&csd_queue_hist[slot], 1);
+	__sync_fetch_and_add(&queue_hist[slot], 1);
 
 	bpf_map_update_elem(&csd_func_map, &percpu_key, &t1, BPF_ANY);
 
@@ -132,7 +203,7 @@ int handle_csd_function_exit(struct trace_event_raw_csd_function *ctx)
 	slot = log2l(dt);
 	if (slot >= MAX_SLOTS)
 		slot = MAX_SLOTS - 1;
-	__sync_fetch_and_add(&csd_func_hist[slot], 1);
+	__sync_fetch_and_add(&func_hist[slot], 1);
 
 	if (dt >= csd_func_threshold_ms * 1000) {
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
