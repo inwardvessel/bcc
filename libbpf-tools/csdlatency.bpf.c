@@ -17,27 +17,39 @@ extern void generic_smp_call_function_single_interrupt(void) __ksym;
 /* key for single element percpu arrays */
 static const __u32 percpu_key = 0;
 
-const volatile __u64 call_threshold_ms = 1000;
-const volatile __u64 csd_ipi_response_threshold_ms = 1000;
-const volatile __u64 csd_dispatch_threshold_ms = 1000;
-const volatile __u64 csd_func_threshold_ms = 1000;
-
-struct csd_queue_key {
-	unsigned int cpu;
-	void *func;
-};
+/* latency thresholds for notifying userspace when exceeded */
+const volatile __u64 call_single_threshold_ms = 500;
+const volatile __u64 call_many_threshold_ms = 500;
+const volatile __u64 ipi_response_threshold_ms = 500;
+const volatile __u64 queue_lat_threshold_ms = 500;
+const volatile __u64 queue_flush_threshold_ms = 500;
+const volatile __u64 csd_func_threshold_ms = 500;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
 	__type(key, u32);
 	__type(value, u64);
-} call_start_map SEC(".maps");
+} call_single_map SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u64);
+} call_many_map SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, u32);
+	__type(value, u64);
+} call_single_async_map SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 128); /* TODO set in user prog */
-	__type(key, struct csd_queue_key);
+	__type(key, void *);
 	__type(value, u64);
 } csd_queue_map SEC(".maps");
 
@@ -67,19 +79,21 @@ struct {
 	__uint(max_entries, 256 * 1024);
 } events SEC(".maps");
 
+/* time spend in smp_call_function_single() */
+__u32 call_single_hist[MAX_SLOTS] = {};
+
+/* time spend in smp_call_function_many_cond() */
+__u32 call_many_hist[MAX_SLOTS] = {};
+
 /* time from csd func enqueue to func entry */
-__u32 queue_hist[MAX_SLOTS] = {};
+__u32 queue_lat_hist[MAX_SLOTS] = {};
 
 /* time from csd func entry to func exit */
-__u32 func_hist[MAX_SLOTS] = {};
+__u32 func_lat_hist[MAX_SLOTS] = {};
 
-/* time from ipi send to interrupt handler */
-__u32 ipi_hist[MAX_SLOTS] = {};
+/* time from ipi send to interrupt handler entry */
+__u32 ipi_lat_hist[MAX_SLOTS] = {};
 
-__u32 sync_local_hist[MAX_SLOTS] = {};
-__u32 sync_remote_hist[MAX_SLOTS] = {};
-__u32 async_local_hist[MAX_SLOTS] = {};
-__u32 async_remote_hist[MAX_SLOTS] = {};
 
 struct update_ipi_ctx {
 	u64 t;
@@ -91,7 +105,7 @@ int BPF_PROG(handle_smp_call_function_single_entry, int cpu, smp_call_func_t fun
 {
 	const u64 t = bpf_ktime_get_ns();
 
-	bpf_map_update_elem(&call_start_map, &percpu_key, &t, BPF_ANY);
+	bpf_map_update_elem(&call_single_map, &percpu_key, &t, BPF_ANY);
 
 	return 0;
 }
@@ -103,7 +117,7 @@ int BPF_PROG(handle_smp_call_function_single_exit, int cpu, smp_call_func_t func
 	s64 dt;
 
 	t1 =  bpf_ktime_get_ns();
-	t0 = bpf_map_lookup_elem(&call_start_map, &percpu_key);
+	t0 = bpf_map_lookup_elem(&call_single_map, &percpu_key);
 	if (!t0)
 		return 0;
 
@@ -115,26 +129,68 @@ int BPF_PROG(handle_smp_call_function_single_exit, int cpu, smp_call_func_t func
 	if (slot >= MAX_SLOTS)
 		slot = MAX_SLOTS - 1;
 
-	if (cpu == bpf_get_smp_processor_id()) {
-		if (wait)
-			__sync_fetch_and_add(&sync_local_hist[slot], 1);
-		else
-			__sync_fetch_and_add(&async_local_hist[slot], 1);
-	} else {
-		if (wait)
-			__sync_fetch_and_add(&sync_remote_hist[slot], 1);
-		else
-			__sync_fetch_and_add(&async_remote_hist[slot], 1);
-	}
+	__sync_fetch_and_add(&call_single_hist[slot], 1);
 
-	if (dt >= call_threshold_ms * 1000) {
+	if (dt >= call_single_threshold_ms * 1000) {
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 		if (!e)
 			return 0;
 
-		e->type = CSD_FUNC_LATENCY;
+		e->type = CSD_CALL_SINGLE_LATENCY;
 		e->t = dt;
-		//e->func = (u64)func;
+		e->cpu = bpf_get_smp_processor_id();
+		/* workaround for reading typedef funcs
+		 * e->func = (u64)func;
+		 */
+		bpf_probe_read_kernel(&e->func, sizeof(e->func), &ctx[1]);
+		bpf_ringbuf_submit(e, 0);
+	}
+
+	return 0;
+}
+
+SEC("fentry/smp_call_function_many_cond")
+int BPF_PROG(handle_smp_call_function_many_cond_entry, const struct cpumask *mask, smp_call_func_t func, void *info, unsigned int scf_flags, smp_cond_func_t cond_func)
+{
+	const u64 t = bpf_ktime_get_ns();
+
+	bpf_map_update_elem(&call_many_map, &percpu_key, &t, BPF_ANY);
+
+	return 0;
+}
+
+SEC("fexit/smp_call_function_many_cond")
+int BPF_PROG(handle_smp_call_function_many_cond_exit, const struct cpumask *mask, smp_call_func_t func, void *info, unsigned int scf_flags, smp_cond_func_t cond_func)
+{
+	u64 *t0, t1, slot;
+	s64 dt;
+
+	t1 =  bpf_ktime_get_ns();
+	t0 = bpf_map_lookup_elem(&call_single_map, &percpu_key);
+	if (!t0)
+		return 0;
+
+	dt = (s64)(t1 - *t0);
+	if (dt < 0)
+		return 0;
+
+	slot = log2(dt);
+	if (slot >= MAX_SLOTS)
+		slot = MAX_SLOTS - 1;
+
+	__sync_fetch_and_add(&call_many_hist[slot], 1);
+
+	if (dt >= call_many_threshold_ms * 1000) {
+		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+		if (!e)
+			return 0;
+
+		e->type = CSD_CALL_MANY_LATENCY;
+		e->t = dt;
+		e->cpu = bpf_get_smp_processor_id();
+		/* workaround for reading typedef funcs
+		 * e->func = (u64)func;
+		 */
 		bpf_probe_read_kernel(&e->func, sizeof(e->func), &ctx[1]);
 		bpf_ringbuf_submit(e, 0);
 	}
@@ -143,45 +199,38 @@ int BPF_PROG(handle_smp_call_function_single_exit, int cpu, smp_call_func_t func
 }
 
 SEC("tracepoint/csd/csd_queue_cpu")
-int handle_csd_queue(struct trace_event_raw_csd_queue_cpu *ctx)
+int BPF_PROG(handle_csd_queue, unsigned int cpu, void *callsite, void *func, void *csd)
 {
 	const u64 t = bpf_ktime_get_ns();
-	const struct csd_queue_key key = {
-		.cpu = (unsigned int)ctx->cpu,
-		.func = (void *)ctx->func
-	};
 
-	bpf_map_update_elem(&csd_queue_map, &key, &t, BPF_NOEXIST);
+	bpf_map_update_elem(&csd_queue_map, &csd, &t, BPF_NOEXIST);
+
 	return 0;
 }
 
-SEC("tp/csd/csd_function_entry")
-int handle_csd_function_entry(struct trace_event_raw_csd_function *ctx)
+SEC("tracepoint/csd/csd_function_entry")
+int BPF_PROG(handle_csd_function_entry, void *func, void *csd)
 {
 	u64 *t0, t1, slot;
 	s64 dt;
-	struct csd_queue_key csd_queue_key;
 
 	t1 = bpf_ktime_get_ns();
-	csd_queue_key.cpu = bpf_get_smp_processor_id();
-	csd_queue_key.func = (void *)ctx->func;
-	t0 = bpf_map_lookup_elem(&csd_queue_map, &csd_queue_key);
-	if (!t0)
-		return 0;
+	t0 = bpf_map_lookup_elem(&csd_queue_map, &csd);
+	if (t0) {
+		dt = (s64)(t1 - *t0);
+		if (dt < 0)
+			bpf_printk("unexpected negative time delta\n");
 
-	dt = (s64)(t1 - *t0);
-	if (dt < 0)
-		goto cleanup;
+		slot = log2(dt);
+		if (slot >= MAX_SLOTS)
+			slot = MAX_SLOTS - 1;
+		__sync_fetch_and_add(&queue_lat_hist[slot], 1);
 
-	slot = log2(dt);
-	if (slot >= MAX_SLOTS)
-		slot = MAX_SLOTS - 1;
-	__sync_fetch_and_add(&queue_hist[slot], 1);
+		bpf_map_delete_elem(&csd_queue_map, &csd);
+	}
 
 	bpf_map_update_elem(&csd_func_map, &percpu_key, &t1, BPF_ANY);
 
-cleanup:
-	bpf_map_delete_elem(&csd_queue_map, &csd_queue_key);
 	return 0;
 }
 
@@ -203,7 +252,7 @@ int handle_csd_function_exit(struct trace_event_raw_csd_function *ctx)
 	slot = log2l(dt);
 	if (slot >= MAX_SLOTS)
 		slot = MAX_SLOTS - 1;
-	__sync_fetch_and_add(&func_hist[slot], 1);
+	__sync_fetch_and_add(&func_lat_hist[slot], 1);
 
 	if (dt >= csd_func_threshold_ms * 1000) {
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
@@ -288,11 +337,11 @@ int handle_call_function_single_entry(void *ctx)
 	slot = log2l(dt);
 	if (slot >= MAX_SLOTS)
 		slot = MAX_SLOTS - 1;
-	__sync_fetch_and_add(&ipi_hist[slot], 1);
+	__sync_fetch_and_add(&ipi_lat_hist[slot], 1);
 
 	bpf_map_update_elem(&ipi_dispatch_map, &percpu_key, &t1, BPF_ANY);
 
-	if (dt >= csd_ipi_response_threshold_ms * 1000) {
+	if (dt >= ipi_response_threshold_ms * 1000) {
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 		if (!e)
 			goto cleanup;
@@ -326,9 +375,9 @@ int handle_call_function_single_exit(void *ctx)
 	slot = log2l(dt);
 	if (slot >= MAX_SLOTS)
 		slot = MAX_SLOTS - 1;
-	__sync_fetch_and_add(&ipi_hist[slot], 1);
+	__sync_fetch_and_add(&ipi_lat_hist[slot], 1);
 
-	if (dt >= csd_dispatch_threshold_ms * 1000) {
+	if (dt >= queue_lat_threshold_ms * 1000) {
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 		if (!e)
 			return 0;

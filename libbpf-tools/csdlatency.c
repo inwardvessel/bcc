@@ -11,16 +11,22 @@ static struct env {
 	int interval; /* dump histograms every N seconds */
 	int nr_intervals; /* exit program after N intervals, ignore if negative */
 	int perf_max_stack_depth;
-	__u64 csd_ipi_response_threshold_ms; /* report remote cpu when time exceeded */
-	__u64 csd_dispatch_threshold_ms; /* report stacks interrupted when time exceeded */
-	__u64 csd_func_threshold_ms; /* report csd funcs that exceed this time */
+	__u64 call_single_threshold_ms; /* report when smp_call_function_single() exceeds this */
+	__u64 call_many_threshold_ms; /* report when smp_call_function_many() exceeds this */
+	__u64 ipi_response_threshold_ms; /* report when */
+	__u64 queue_lat_threshold_ms;
+	__u64 queue_flush_threshold_ms;
+	__u64 csd_func_threshold_ms;
 } env = {
 	.interval = 5,
 	.nr_intervals = -1,
 	.perf_max_stack_depth = 127, /* from sysctl kernel.perf_event_max_stack */
-	.csd_ipi_response_threshold_ms = 500,
-	.csd_dispatch_threshold_ms = 500,
-	.csd_func_threshold_ms = 500,
+	.call_single_threshold_ms = 500,
+	.call_many_threshold_ms = 500,
+	.ipi_response_threshold_ms = 500,
+	.queue_lat_threshold_ms = 500,
+	.queue_flush_threshold_ms = 500,
+	.csd_func_threshold_ms = 500
 };
 
 static struct ksyms *ksyms;
@@ -35,6 +41,10 @@ static int event_handler(void *ctx, void *data, size_t sz)
 	struct event *event = (struct event *)data;
 
 	switch (event->type) {
+		case CSD_CALL_SINGLE_LATENCY:
+			break;
+		case CSD_CALL_MANY_LATENCY:
+			break;
 		case CSD_IPI_RESPONSE_LATENCY:
 			printf("csd ipi response latency event\n");
 			printf("\tthreshold exceeded on cpu %u\n", event->cpu);
@@ -85,8 +95,11 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	skel->rodata->csd_ipi_response_threshold_ms = env.csd_ipi_response_threshold_ms;
-	skel->rodata->csd_dispatch_threshold_ms = env.csd_dispatch_threshold_ms;
+	skel->rodata->call_single_threshold_ms = env.call_single_threshold_ms;
+	skel->rodata->call_many_threshold_ms = env.call_many_threshold_ms;
+	skel->rodata->ipi_response_threshold_ms = env.ipi_response_threshold_ms;
+	skel->rodata->queue_lat_threshold_ms = env.queue_lat_threshold_ms;
+	skel->rodata->queue_flush_threshold_ms = env.queue_flush_threshold_ms;
 	skel->rodata->csd_func_threshold_ms = env.csd_func_threshold_ms;
 
 	bpf_map__set_max_entries(skel->maps.csd_queue_map, libbpf_num_possible_cpus() * 2);
@@ -109,14 +122,19 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	ring_buffer__poll(rb, 1000 /* timeout ms */);
+	ring_buffer__poll(rb, 10000 /* timeout ms */);
+
+	printf("latency of call single\n");
+	print_log2_hist(skel->bss->call_single_hist, MAX_SLOTS, "nsec");
+	printf("latency of call many\n");
+	print_log2_hist(skel->bss->call_many_hist, MAX_SLOTS, "nsec");
 
 	printf("latency of function queue time to remote function start time\n");
-	print_log2_hist(skel->bss->queue_hist, MAX_SLOTS, "nsec");
+	print_log2_hist(skel->bss->queue_lat_hist, MAX_SLOTS, "nsec");
 	printf("latency of total time spend in remote IPI callback\n");
-	print_log2_hist(skel->bss->ipi_hist, MAX_SLOTS, "nsec");
+	print_log2_hist(skel->bss->ipi_lat_hist, MAX_SLOTS, "nsec");
 	printf("latency of individual functions dispatched within a single IPI callback\n");
-	print_log2_hist(skel->bss->func_hist, MAX_SLOTS, "nsec");
+	print_log2_hist(skel->bss->func_lat_hist, MAX_SLOTS, "nsec");
 
 	if (rb)
 		ring_buffer__free(rb);
