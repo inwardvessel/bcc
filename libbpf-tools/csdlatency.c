@@ -124,17 +124,23 @@ int main(int argc, char **argv)
 
 	ring_buffer__poll(rb, 10000 /* timeout ms */);
 
-	printf("latency of call single\n");
+	printf("latency of smp_call_function_single\n");
 	print_log2_hist(skel->bss->call_single_hist, MAX_SLOTS, "nsec");
-	printf("latency of call many\n");
+
+	printf("latency of smp_call_function_many_cond\n");
 	print_log2_hist(skel->bss->call_many_hist, MAX_SLOTS, "nsec");
 
-	printf("latency of function queue time to remote function start time\n");
+	printf("latency of csd func enqueue to remote function entry\n");
 	print_log2_hist(skel->bss->queue_lat_hist, MAX_SLOTS, "nsec");
-	printf("latency of total time spend in remote IPI callback\n");
-	print_log2_hist(skel->bss->ipi_lat_hist, MAX_SLOTS, "nsec");
-	printf("latency of individual functions dispatched within a single IPI callback\n");
+
+	printf("latency of time spent in interrupt handler (generic_smp_call_function_single_interrupt)\n");
+	print_log2_hist(skel->bss->queue_flush_hist, MAX_SLOTS, "nsec");
+
+	printf("latency of individual csd functions entry to exit\n");
 	print_log2_hist(skel->bss->func_lat_hist, MAX_SLOTS, "nsec");
+
+	printf("latency of IPI send time to response time\n");
+	print_log2_hist(skel->bss->ipi_lat_hist, MAX_SLOTS, "nsec");
 
 	if (rb)
 		ring_buffer__free(rb);
