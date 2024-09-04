@@ -95,6 +95,8 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
+	skel->rodata->nr_cpus = libbpf_num_possible_cpus();
+
 	skel->rodata->call_single_threshold_ms = env.call_single_threshold_ms;
 	skel->rodata->call_many_threshold_ms = env.call_many_threshold_ms;
 	skel->rodata->ipi_response_threshold_ms = env.ipi_response_threshold_ms;

@@ -7,23 +7,22 @@
 #include "csdlatency.h"
 #include "bits.bpf.h"
 
-extern struct bpf_cpumask *bpf_cpumask_create(void) __ksym;
-extern void bpf_cpumask_copy(struct bpf_cpumask *dst, const struct cpumask *src) __ksym;
-extern bool bpf_cpumask_test_cpu(u32 cpu, const struct cpumask *cpumask) __ksym;
-extern void bpf_cpumask_release(struct bpf_cpumask *cpumask) __ksym;
-
 extern void generic_smp_call_function_single_interrupt(void) __ksym;
+
+extern bool bpf_cpumask_test_cpu(u32 cpu, const struct cpumask *cpumask) __ksym;
 
 /* key for single element percpu arrays */
 static const __u32 percpu_key = 0;
 
+const volatile __u32 nr_cpus;
+
 /* latency thresholds for notifying userspace when exceeded */
-const volatile __u64 call_single_threshold_ms = 500;
-const volatile __u64 call_many_threshold_ms = 500;
-const volatile __u64 ipi_response_threshold_ms = 500;
-const volatile __u64 queue_lat_threshold_ms = 500;
-const volatile __u64 queue_flush_threshold_ms = 500;
-const volatile __u64 csd_func_threshold_ms = 500;
+const volatile __u64 call_single_threshold_ms;
+const volatile __u64 call_many_threshold_ms;
+const volatile __u64 ipi_response_threshold_ms;
+const volatile __u64 queue_lat_threshold_ms;
+const volatile __u64 queue_flush_threshold_ms;
+const volatile __u64 csd_func_threshold_ms;
 
 static __u64 conv_ms_to_ns(__u64 ms)
 {
@@ -139,7 +138,7 @@ __u32 ipi_lat_hist[MAX_SLOTS] = {};
 
 struct update_ipi_ctx {
 	u64 t;
-	struct bpf_cpumask *cpumask;
+	struct cpumask *cpumask;
 };
 
 SEC("fentry/smp_call_function_single")
@@ -262,15 +261,14 @@ int BPF_PROG(handle_csd_function_entry, void *func, void *csd)
 	t0 = bpf_map_lookup_elem(&csd_queue_map, &csd_addr);
 	if (t0) {
 		dt = (s64)(t1 - *t0);
+		bpf_map_delete_elem(&csd_queue_map, &csd_addr);
 		if (dt < 0)
-			bpf_printk("unexpected negative time delta\n");
+			return 0;
 
 		slot = log2(dt);
 		if (slot >= MAX_SLOTS)
 			slot = MAX_SLOTS - 1;
 		__sync_fetch_and_add(&queue_lat_hist[slot], 1);
-
-		bpf_map_delete_elem(&csd_queue_map, &csd_addr);
 	}
 
 	bpf_map_update_elem(&csd_func_map, &percpu_key, &t1, BPF_ANY);
@@ -329,7 +327,9 @@ int handle_ipi_send_cpu(struct trace_event_raw_ipi_send_cpu *ctx)
 	if (!map)
 		return 0;
 
-	bpf_map_push_elem(map, &t, BPF_ANY);
+	if (bpf_map_push_elem(map, &t, BPF_ANY)) {
+		bpf_printk("push fail 1\n");
+	}
 
 	return 0;
 }
@@ -339,10 +339,13 @@ static long maybe_update_ipi_map(u32 cpu, void *ctx)
 	struct bpf_map *map;
 	struct update_ipi_ctx *x = (struct update_ipi_ctx *)ctx;
 
-	if (bpf_cpumask_test_cpu(cpu, (struct cpumask *)x->cpumask)) {
+	if (bpf_cpumask_test_cpu(cpu, x->cpumask)) {
 		map = bpf_map_lookup_elem(&ipi_queue_map, &cpu);
-		if (map)
-			bpf_map_push_elem(map, &x->t, BPF_ANY);
+		if (map) {
+			if (bpf_map_push_elem(map, &x->t, BPF_ANY)) {
+				bpf_printk("push fail 2\n");
+			}
+		}
 	}
 
 	return 0;
@@ -352,22 +355,15 @@ SEC("tp_btf/ipi_send_cpumask")
 int handle_ipi_send_cpumask(struct bpf_raw_tracepoint_args *ctx)
 {
 	struct update_ipi_ctx x;
-	struct cpumask *cpumask;
 	void *callback;
 
-	cpumask = (struct cpumask *)ctx->args[0];
 	callback = (void *)ctx->args[2];
 	if (callback != generic_smp_call_function_single_interrupt)
 		return 0;
 
 	x.t = bpf_ktime_get_ns();
-	x.cpumask = bpf_cpumask_create();
-	if (!x.cpumask)
-		return -ENOMEM;
-
-	bpf_cpumask_copy(x.cpumask, cpumask);
-	bpf_loop(16, maybe_update_ipi_map, &x, 0);
-	bpf_cpumask_release(x.cpumask);
+	x.cpumask = (struct cpumask *)ctx->args[0];
+	bpf_loop(nr_cpus, maybe_update_ipi_map, &x, 0);
 
 	return 0;
 }
@@ -375,42 +371,35 @@ int handle_ipi_send_cpumask(struct bpf_raw_tracepoint_args *ctx)
 SEC("fentry/generic_smp_call_function_single_interrupt")
 int handle_call_function_single_entry(void *ctx)
 {
-	u64 t0, t1, slot;
+	u64 t0, t, slot;
 	s64 dt;
 	unsigned int cpu;
 	struct bpf_map *map;
 
-	t1 = bpf_ktime_get_ns();
-	cpu = bpf_get_smp_processor_id();
+	t = bpf_ktime_get_ns();
+	bpf_map_update_elem(&csd_flush_map, &percpu_key, &t, BPF_ANY);
 
+	cpu = bpf_get_smp_processor_id();
 	map = bpf_map_lookup_elem(&ipi_queue_map, &cpu);
 	if (!map)
 		return 0;
 
-	if (bpf_map_pop_elem(map, &t0)) {
-		bpf_printk("pop fail\n");
+	if (bpf_map_pop_elem(map, &t0))
 		return 0;
-	}
 
-	if (t0 == 0) {
-		bpf_printk("zero\n");
-	}
-
-	dt = (s64)(t1 - t0);
+	dt = (s64)(t - t0);
 	if (dt < 0)
-		goto out;
+		return 0;
 
 	slot = log2l(dt);
 	if (slot >= MAX_SLOTS)
 		slot = MAX_SLOTS - 1;
 	__sync_fetch_and_add(&ipi_lat_hist[slot], 1);
 
-	bpf_map_update_elem(&csd_flush_map, &percpu_key, &t1, BPF_ANY);
-
 	if (dt >= conv_ms_to_ns(ipi_response_threshold_ms)) {
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 		if (!e)
-			goto out;
+			return 0;
 
 		e->type = CSD_IPI_RESPONSE_LATENCY;
 		e->t = dt;
@@ -418,7 +407,6 @@ int handle_call_function_single_entry(void *ctx)
 		bpf_ringbuf_submit(e, 0);
 	}
 
-out:
 	return 0;
 }
 
