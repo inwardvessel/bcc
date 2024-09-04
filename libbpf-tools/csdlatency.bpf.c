@@ -47,7 +47,7 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 128); /* TODO set in user prog */
-	__type(key, void *);
+	__type(key, u64);
 	__type(value, u64);
 } csd_queue_map SEC(".maps");
 
@@ -244,8 +244,9 @@ SEC("tracepoint/csd/csd_queue_cpu")
 int BPF_PROG(handle_csd_queue, unsigned int cpu, void *callsite, void *func, void *csd)
 {
 	const u64 t = bpf_ktime_get_ns();
+	u64 csd_addr = (u64)csd;
 
-	bpf_map_update_elem(&csd_queue_map, &csd, &t, BPF_NOEXIST);
+	bpf_map_update_elem(&csd_queue_map, &csd_addr, &t, BPF_NOEXIST);
 
 	return 0;
 }
@@ -255,9 +256,10 @@ int BPF_PROG(handle_csd_function_entry, void *func, void *csd)
 {
 	u64 *t0, t1, slot;
 	s64 dt;
+	u64 csd_addr = (u64)csd;
 
 	t1 = bpf_ktime_get_ns();
-	t0 = bpf_map_lookup_elem(&csd_queue_map, &csd);
+	t0 = bpf_map_lookup_elem(&csd_queue_map, &csd_addr);
 	if (t0) {
 		dt = (s64)(t1 - *t0);
 		if (dt < 0)
@@ -268,7 +270,7 @@ int BPF_PROG(handle_csd_function_entry, void *func, void *csd)
 			slot = MAX_SLOTS - 1;
 		__sync_fetch_and_add(&queue_lat_hist[slot], 1);
 
-		bpf_map_delete_elem(&csd_queue_map, &csd);
+		bpf_map_delete_elem(&csd_queue_map, &csd_addr);
 	}
 
 	bpf_map_update_elem(&csd_func_map, &percpu_key, &t1, BPF_ANY);
