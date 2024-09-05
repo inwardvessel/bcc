@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 // Copyright (c) 2024 Meta Platforms, Inc. and affiliates.
-#include "<vmlinux.h>"
+#include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <errno.h>
@@ -19,7 +19,6 @@ const volatile __u32 nr_cpus;
 /* latency thresholds for notifying userspace when exceeded */
 const volatile __u64 call_single_threshold_ms;
 const volatile __u64 call_many_threshold_ms;
-const volatile __u64 ipi_response_threshold_ms;
 const volatile __u64 queue_lat_threshold_ms;
 const volatile __u64 queue_flush_threshold_ms;
 const volatile __u64 csd_func_threshold_ms;
@@ -64,53 +63,12 @@ struct {
 	__type(value, u64);
 } csd_flush_map SEC(".maps");
 
-struct ipi_queue {
-	__uint(type, BPF_MAP_TYPE_QUEUE);
-	__uint(max_entries, 128); /* TODO set in user prog: nr_cpus**2 */
-	__type(value, u64);
-};
-struct ipi_queue ipi_queue_0 SEC(".maps");
-struct ipi_queue ipi_queue_1 SEC(".maps");
-struct ipi_queue ipi_queue_2 SEC(".maps");
-struct ipi_queue ipi_queue_3 SEC(".maps");
-struct ipi_queue ipi_queue_4 SEC(".maps");
-struct ipi_queue ipi_queue_5 SEC(".maps");
-struct ipi_queue ipi_queue_6 SEC(".maps");
-struct ipi_queue ipi_queue_7 SEC(".maps");
-struct ipi_queue ipi_queue_8 SEC(".maps");
-struct ipi_queue ipi_queue_9 SEC(".maps");
-struct ipi_queue ipi_queue_10 SEC(".maps");
-struct ipi_queue ipi_queue_11 SEC(".maps");
-struct ipi_queue ipi_queue_12 SEC(".maps");
-struct ipi_queue ipi_queue_13 SEC(".maps");
-struct ipi_queue ipi_queue_14 SEC(".maps");
-struct ipi_queue ipi_queue_15 SEC(".maps");
-
 struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY_OF_MAPS);
-	__uint(max_entries, 16);
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__uint(max_entries, 1);
 	__type(key, u32);
-	__array(values, struct ipi_queue);
-} ipi_queue_map SEC(".maps") = {
-	.values = {
-		&ipi_queue_0,
-		&ipi_queue_1,
-		&ipi_queue_2,
-		&ipi_queue_3,
-		&ipi_queue_4,
-		&ipi_queue_5,
-		&ipi_queue_6,
-		&ipi_queue_7,
-		&ipi_queue_8,
-		&ipi_queue_9,
-		&ipi_queue_10,
-		&ipi_queue_11,
-		&ipi_queue_12,
-		&ipi_queue_13,
-		&ipi_queue_14,
-		&ipi_queue_15
-	}
-};
+	__type(value, u64);
+} ipi_map SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -132,12 +90,10 @@ __u32 queue_flush_hist[MAX_SLOTS] = {};
 /* time from csd func entry to func exit */
 __u32 func_lat_hist[MAX_SLOTS] = {};
 
-/* time from ipi send to interrupt handler entry */
-__u32 ipi_lat_hist[MAX_SLOTS] = {};
+/* counts of ipi's sent to cpu's */
+__u32 ipi_cpu_hist[1] SEC(".data.ipi_cpu_hist");
 
-
-struct update_ipi_ctx {
-	u64 t;
+struct cpumask_ctx {
 	struct cpumask *cpumask;
 };
 
@@ -310,43 +266,51 @@ int handle_csd_function_exit(struct trace_event_raw_csd_function *ctx)
 	return 0;
 }
 
+#define ARRAY_ELEM_PTR(arr, i, n) (typeof(arr[i]) *)({ \
+	u64 __base = (u64)arr; \
+	u64 __addr = (u64)&(arr[i]) - __base; \
+	asm volatile ( \
+		"if %0 <= %[max] goto +2\n" \
+		"%0 = 0\n" \
+		"goto +1\n" \
+		"%0 += %1\n" \
+		: "+r"(__addr) \
+		: "r"(__base), \
+		[max]"r"(sizeof(arr[0]) * ((n) - 1))); \
+	__addr; \
+})
+
 SEC("tp/ipi/ipi_send_cpu")
 int handle_ipi_send_cpu(struct trace_event_raw_ipi_send_cpu *ctx)
 {
-	u64 t;
-	u32 cpu;
-	struct bpf_map *map;
+	u32 *val;
 
 	if (ctx->callback != generic_smp_call_function_single_interrupt)
 		return 0;
 
-	t = bpf_ktime_get_ns();
-	cpu = ctx->cpu;
-
-	map = bpf_map_lookup_elem(&ipi_queue_map, &cpu);
-	if (!map)
+	val = (u32 *)ARRAY_ELEM_PTR(ipi_cpu_hist, ctx->cpu, nr_cpus);
+	if (!val)
 		return 0;
 
-	if (bpf_map_push_elem(map, &t, BPF_ANY)) {
-		bpf_printk("push fail 1\n");
-	}
+	__sync_fetch_and_add(val, 1);
 
 	return 0;
 }
 
 static long maybe_update_ipi_map(u32 cpu, void *ctx)
 {
-	struct bpf_map *map;
-	struct update_ipi_ctx *x = (struct update_ipi_ctx *)ctx;
+	struct cpumask_ctx *cpumask_ctx = (struct cpumask_ctx *)ctx;
+	struct cpumask *cpumask= cpumask_ctx->cpumask;
+	u32 *val;
 
-	if (bpf_cpumask_test_cpu(cpu, x->cpumask)) {
-		map = bpf_map_lookup_elem(&ipi_queue_map, &cpu);
-		if (map) {
-			if (bpf_map_push_elem(map, &x->t, BPF_ANY)) {
-				bpf_printk("push fail 2\n");
-			}
-		}
-	}
+	if (!bpf_cpumask_test_cpu(cpu, cpumask))
+		return 0;
+
+	val = (u32 *)ARRAY_ELEM_PTR(ipi_cpu_hist, cpu, nr_cpus);
+	if (!val)
+		return 0;
+
+	__sync_fetch_and_add(val, 1);
 
 	return 0;
 }
@@ -354,16 +318,15 @@ static long maybe_update_ipi_map(u32 cpu, void *ctx)
 SEC("tp_btf/ipi_send_cpumask")
 int handle_ipi_send_cpumask(struct bpf_raw_tracepoint_args *ctx)
 {
-	struct update_ipi_ctx x;
+	struct cpumask_ctx cpumask_ctx;
 	void *callback;
 
+	cpumask_ctx.cpumask = (struct cpumask *)ctx->args[0];
 	callback = (void *)ctx->args[2];
 	if (callback != generic_smp_call_function_single_interrupt)
 		return 0;
 
-	x.t = bpf_ktime_get_ns();
-	x.cpumask = (struct cpumask *)ctx->args[0];
-	bpf_loop(nr_cpus, maybe_update_ipi_map, &x, 0);
+	bpf_loop(nr_cpus, maybe_update_ipi_map, &cpumask_ctx, 0);
 
 	return 0;
 }
@@ -371,41 +334,9 @@ int handle_ipi_send_cpumask(struct bpf_raw_tracepoint_args *ctx)
 SEC("fentry/generic_smp_call_function_single_interrupt")
 int handle_call_function_single_entry(void *ctx)
 {
-	u64 t0, t, slot;
-	s64 dt;
-	unsigned int cpu;
-	struct bpf_map *map;
+	u64 t = bpf_ktime_get_ns();
 
-	t = bpf_ktime_get_ns();
 	bpf_map_update_elem(&csd_flush_map, &percpu_key, &t, BPF_ANY);
-
-	cpu = bpf_get_smp_processor_id();
-	map = bpf_map_lookup_elem(&ipi_queue_map, &cpu);
-	if (!map)
-		return 0;
-
-	if (bpf_map_pop_elem(map, &t0))
-		return 0;
-
-	dt = (s64)(t - t0);
-	if (dt < 0)
-		return 0;
-
-	slot = log2l(dt);
-	if (slot >= MAX_SLOTS)
-		slot = MAX_SLOTS - 1;
-	__sync_fetch_and_add(&ipi_lat_hist[slot], 1);
-
-	if (dt >= conv_ms_to_ns(ipi_response_threshold_ms)) {
-		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-		if (!e)
-			return 0;
-
-		e->type = CSD_IPI_RESPONSE_LATENCY;
-		e->t = dt;
-		e->cpu = cpu;
-		bpf_ringbuf_submit(e, 0);
-	}
 
 	return 0;
 }

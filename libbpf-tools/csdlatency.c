@@ -13,7 +13,6 @@ static struct env {
 	int perf_max_stack_depth;
 	__u64 call_single_threshold_ms; /* report when smp_call_function_single() exceeds this */
 	__u64 call_many_threshold_ms; /* report when smp_call_function_many() exceeds this */
-	__u64 ipi_response_threshold_ms; /* report when */
 	__u64 queue_lat_threshold_ms;
 	__u64 queue_flush_threshold_ms;
 	__u64 csd_func_threshold_ms;
@@ -23,12 +22,12 @@ static struct env {
 	.perf_max_stack_depth = 127, /* from sysctl kernel.perf_event_max_stack */
 	.call_single_threshold_ms = 500,
 	.call_many_threshold_ms = 500,
-	.ipi_response_threshold_ms = 500,
 	.queue_lat_threshold_ms = 500,
 	.queue_flush_threshold_ms = 500,
 	.csd_func_threshold_ms = 500
 };
 
+static int nr_cpus = -1;
 static struct ksyms *ksyms;
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
@@ -42,12 +41,10 @@ static int event_handler(void *ctx, void *data, size_t sz)
 
 	switch (event->type) {
 		case CSD_CALL_SINGLE_LATENCY:
+			printf("smp_call_function_single() took too long\n");
 			break;
 		case CSD_CALL_MANY_LATENCY:
-			break;
-		case CSD_IPI_RESPONSE_LATENCY:
-			printf("csd ipi response latency event\n");
-			printf("\tthreshold exceeded on cpu %u\n", event->cpu);
+			printf("smp_call_function_many*() took too long\n");
 			break;
 		case CSD_DISPATCH_LATENCY:
 			size_t i;
@@ -75,11 +72,37 @@ static int event_handler(void *ctx, void *data, size_t sz)
 	return 0;
 }
 
+static void dump_histograms(const struct csdlatency_bpf *skel)
+{
+	if (nr_cpus < 1)
+		return;
+
+	printf("latency of smp_call_function_single\n");
+	print_log2_hist(skel->bss->call_single_hist, MAX_SLOTS, "nsec");
+
+	printf("latency of smp_call_function_many_cond\n");
+	print_log2_hist(skel->bss->call_many_hist, MAX_SLOTS, "nsec");
+
+	printf("latency of csd func enqueue to remote function entry\n");
+	print_log2_hist(skel->bss->queue_lat_hist, MAX_SLOTS, "nsec");
+
+	printf("latency of time spent in interrupt handler (generic_smp_call_function_single_interrupt)\n");
+	print_log2_hist(skel->bss->queue_flush_hist, MAX_SLOTS, "nsec");
+
+	printf("latency of individual csd functions entry to exit\n");
+	print_log2_hist(skel->bss->func_lat_hist, MAX_SLOTS, "nsec");
+
+	printf("frequency of csd ipi's sent to cpu's\n");
+	print_linear_hist(skel->data_ipi_cpu_hist->ipi_cpu_hist, nr_cpus, 0, 1, "cpu");
+}
+
 int main(int argc, char **argv)
 {
 	struct csdlatency_bpf *skel;
 	struct ring_buffer *rb;
 	int err;
+
+	nr_cpus = libbpf_num_possible_cpus();
 
 	ksyms = ksyms__load();
 	if (!ksyms) {
@@ -95,16 +118,18 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	skel->rodata->nr_cpus = libbpf_num_possible_cpus();
+	skel->rodata->nr_cpus = nr_cpus;
 
 	skel->rodata->call_single_threshold_ms = env.call_single_threshold_ms;
 	skel->rodata->call_many_threshold_ms = env.call_many_threshold_ms;
-	skel->rodata->ipi_response_threshold_ms = env.ipi_response_threshold_ms;
 	skel->rodata->queue_lat_threshold_ms = env.queue_lat_threshold_ms;
 	skel->rodata->queue_flush_threshold_ms = env.queue_flush_threshold_ms;
 	skel->rodata->csd_func_threshold_ms = env.csd_func_threshold_ms;
 
-	bpf_map__set_max_entries(skel->maps.csd_queue_map, libbpf_num_possible_cpus() * 2);
+	size_t sz = bpf_map__set_value_size(skel->maps.data_ipi_cpu_hist, sizeof(skel->data_ipi_cpu_hist->ipi_cpu_hist[0]) * nr_cpus);
+	skel->data_ipi_cpu_hist = bpf_map__initial_value(skel->maps.data_ipi_cpu_hist, &sz);
+
+	bpf_map__set_max_entries(skel->maps.csd_queue_map, nr_cpus * 2);
 
 	err = csdlatency_bpf__load(skel);
 	if (err) {
@@ -124,25 +149,9 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	ring_buffer__poll(rb, 10000 /* timeout ms */);
+	ring_buffer__poll(rb, 3000 /* timeout ms */);
 
-	printf("latency of smp_call_function_single\n");
-	print_log2_hist(skel->bss->call_single_hist, MAX_SLOTS, "nsec");
-
-	printf("latency of smp_call_function_many_cond\n");
-	print_log2_hist(skel->bss->call_many_hist, MAX_SLOTS, "nsec");
-
-	printf("latency of csd func enqueue to remote function entry\n");
-	print_log2_hist(skel->bss->queue_lat_hist, MAX_SLOTS, "nsec");
-
-	printf("latency of time spent in interrupt handler (generic_smp_call_function_single_interrupt)\n");
-	print_log2_hist(skel->bss->queue_flush_hist, MAX_SLOTS, "nsec");
-
-	printf("latency of individual csd functions entry to exit\n");
-	print_log2_hist(skel->bss->func_lat_hist, MAX_SLOTS, "nsec");
-
-	printf("latency of IPI send time to response time\n");
-	print_log2_hist(skel->bss->ipi_lat_hist, MAX_SLOTS, "nsec");
+	dump_histograms(skel);
 
 	if (rb)
 		ring_buffer__free(rb);
