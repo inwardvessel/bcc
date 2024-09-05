@@ -110,15 +110,15 @@ int BPF_PROG(handle_smp_call_function_single_entry, int cpu, smp_call_func_t fun
 SEC("fexit/smp_call_function_single")
 int BPF_PROG(handle_smp_call_function_single_exit, int cpu, smp_call_func_t func, void *info, int wait)
 {
-	u64 *t0, t1, slot;
+	u64 *t0, t, slot;
 	s64 dt;
 
-	t1 =  bpf_ktime_get_ns();
+	t =  bpf_ktime_get_ns();
 	t0 = bpf_map_lookup_elem(&call_single_map, &percpu_key);
 	if (!t0)
 		return 0;
 
-	dt = (s64)(t1 - *t0);
+	dt = (s64)(t - *t0);
 	if (dt < 0)
 		return 0;
 
@@ -159,15 +159,15 @@ int BPF_PROG(handle_smp_call_function_many_cond_entry, const struct cpumask *mas
 SEC("fexit/smp_call_function_many_cond")
 int BPF_PROG(handle_smp_call_function_many_cond_exit, const struct cpumask *mask, smp_call_func_t func, void *info, unsigned int scf_flags, smp_cond_func_t cond_func)
 {
-	u64 *t0, t1, slot;
+	u64 *t0, t, slot;
 	s64 dt;
 
-	t1 = bpf_ktime_get_ns();
+	t = bpf_ktime_get_ns();
 	t0 = bpf_map_lookup_elem(&call_many_map, &percpu_key);
 	if (!t0)
 		return 0;
 
-	dt = (s64)(t1 - *t0);
+	dt = (s64)(t - *t0);
 	if (dt < 0)
 		return 0;
 
@@ -209,14 +209,14 @@ int BPF_PROG(handle_csd_queue, unsigned int cpu, void *callsite, void *func, voi
 SEC("tracepoint/csd/csd_function_entry")
 int BPF_PROG(handle_csd_function_entry, void *func, void *csd)
 {
-	u64 *t0, t1, slot;
+	u64 *t0, t, slot;
 	s64 dt;
 	u64 csd_addr = (u64)csd;
 
-	t1 = bpf_ktime_get_ns();
+	t = bpf_ktime_get_ns();
 	t0 = bpf_map_lookup_elem(&csd_queue_map, &csd_addr);
 	if (t0) {
-		dt = (s64)(t1 - *t0);
+		dt = (s64)(t - *t0);
 		bpf_map_delete_elem(&csd_queue_map, &csd_addr);
 		if (dt < 0)
 			return 0;
@@ -227,7 +227,7 @@ int BPF_PROG(handle_csd_function_entry, void *func, void *csd)
 		__sync_fetch_and_add(&queue_lat_hist[slot], 1);
 	}
 
-	bpf_map_update_elem(&csd_func_map, &percpu_key, &t1, BPF_ANY);
+	bpf_map_update_elem(&csd_func_map, &percpu_key, &t, BPF_ANY);
 
 	return 0;
 }
@@ -235,15 +235,15 @@ int BPF_PROG(handle_csd_function_entry, void *func, void *csd)
 SEC("tp/csd/csd_function_exit")
 int handle_csd_function_exit(struct trace_event_raw_csd_function *ctx)
 {
-	u64 *t0, t1, slot;
+	u64 *t0, t, slot;
 	s64 dt;
 
-	t1 = bpf_ktime_get_ns();
+	t = bpf_ktime_get_ns();
 	t0 = bpf_map_lookup_elem(&csd_func_map, &percpu_key);
 	if (!t0)
 		return 0;
 
-	dt = (s64)(t1 - *t0);
+	dt = (s64)(t - *t0);
 	if (dt < 0)
 		return 0;
 
@@ -344,15 +344,15 @@ int handle_call_function_single_entry(void *ctx)
 SEC("fexit/generic_smp_call_function_single_interrupt")
 int handle_call_function_single_exit(void *ctx)
 {
-	u64 *t0, t1, slot;
+	u64 *t0, t, slot;
 	s64 dt;
 
-	t1 = bpf_ktime_get_ns();
+	t = bpf_ktime_get_ns();
 	t0 = bpf_map_lookup_elem(&csd_flush_map, &percpu_key);
 	if (!t0)
 		return 0;
 
-	dt = (s64)(t1 - *t0);
+	dt = (s64)(t - *t0);
 	if (dt < 0)
 		return 0;
 
