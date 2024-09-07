@@ -17,8 +17,8 @@ static struct env {
 	__u64 queue_flush_threshold_ms;
 	__u64 csd_func_threshold_ms;
 } env = {
-	.interval = 5,
-	.nr_intervals = -1,
+	.interval = 1,
+	.nr_intervals = 10,
 	.perf_max_stack_depth = 127, /* from sysctl kernel.perf_event_max_stack */
 	.call_single_threshold_ms = 500,
 	.call_many_threshold_ms = 500,
@@ -41,16 +41,16 @@ static int event_handler(void *ctx, void *data, size_t sz)
 
 	switch (event->type) {
 		case CSD_CALL_SINGLE_LATENCY:
-			printf("smp_call_function_single() took too long\n");
+			printf("smp_call_function_single() took too long (%llu ms)\n", event->t / 1000000);
 			break;
 		case CSD_CALL_MANY_LATENCY:
-			printf("smp_call_function_many*() took too long\n");
+			printf("smp_call_function_many*() took too long (%llu ms)\n", event->t / 1000000);
 			break;
-		case CSD_DISPATCH_LATENCY:
+		case CSD_FLUSH_LATENCY:
 			size_t i;
 
-			printf("csd dispatch latency event\n");
-			printf("\t delayed stack below\n");
+			printf("csd flush took too long (%llu ms)\n", event->t / 1000000);
+			printf("the stack below was delayed during this time:\n");
 
 			for (i = 0; i < event->stack_sz / sizeof(event->stack[0]); ++i) {
 				const uint64_t addr = event->stack[i];
@@ -61,8 +61,7 @@ static int event_handler(void *ctx, void *data, size_t sz)
 			break;
 		case CSD_FUNC_LATENCY:
 			const struct ksym *ksym = ksyms__map_addr(ksyms, event->func);
-			printf("csd func latency event\n");
-			printf("\tthreshold exceeded on %s %llx\n", ksym->name, event->func);
+			printf("csd func %s(%llx) took too long (%llu ms)\n", ksym->name, event->func, event->t / 1000000);
 			break;
 		default:
 			printf("unknown event\n");
@@ -149,9 +148,11 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	ring_buffer__poll(rb, 3000 /* timeout ms */);
-
-	dump_histograms(skel);
+	int i;
+	for (i = 0; i < env.nr_intervals; ++i) {
+		ring_buffer__poll(rb, env.interval * 1000 /* timeout ms */);
+		dump_histograms(skel);
+	}
 
 	if (rb)
 		ring_buffer__free(rb);

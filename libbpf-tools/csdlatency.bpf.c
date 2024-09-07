@@ -90,7 +90,7 @@ __u32 queue_flush_hist[MAX_SLOTS] = {};
 /* time from csd func entry to func exit */
 __u32 func_lat_hist[MAX_SLOTS] = {};
 
-/* counts of ipi's sent to cpu's */
+/* counts of ipi's sent to cpu's (resized to cpu count in user prog) */
 __u32 ipi_cpu_hist[1] SEC(".data.ipi_cpu_hist");
 
 struct cpumask_ctx {
@@ -366,7 +366,7 @@ int handle_call_function_single_exit(void *ctx)
 		if (!e)
 			return 0;
 
-		e->type = CSD_DISPATCH_LATENCY;
+		e->type = CSD_FLUSH_LATENCY;
 		e->t = dt;
 		e->stack_sz = bpf_get_stack(ctx, e->stack, sizeof(e->stack), 0);
 		bpf_ringbuf_submit(e, 0);

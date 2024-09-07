@@ -7,21 +7,15 @@
 enum latency_event_type {
 	CSD_CALL_SINGLE_LATENCY,
 	CSD_CALL_MANY_LATENCY,
-	CSD_DISPATCH_LATENCY,
+	CSD_FLUSH_LATENCY,
 	CSD_FUNC_LATENCY
 };
 
 struct event {
 	enum latency_event_type type;
 	__u64 t;
-
-	/* response */
 	__u32 cpu;
-
-	/* dispatch */
+	__u64 func;
 	__u32 stack_sz;
 	__u64 stack[PERF_EVENT_MAX_STACK];
-
-	/* func */
-	__u64 func;
 };
