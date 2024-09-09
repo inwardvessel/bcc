@@ -99,9 +99,11 @@ struct cpumask_ctx {
 SEC("fentry/smp_call_function_single")
 int BPF_PROG(handle_smp_call_function_single_entry, int cpu, smp_call_func_t func, void *info, int wait)
 {
-	const u64 t = bpf_ktime_get_ns();
+	u64 *t;
 
-	bpf_map_update_elem(&call_single_map, &percpu_key, &t, BPF_ANY);
+	t = bpf_map_lookup_elem(&call_single_map, &percpu_key);
+	if (t)
+		*t = bpf_ktime_get_ns();
 
 	return 0;
 }
@@ -148,9 +150,11 @@ int BPF_PROG(handle_smp_call_function_single_exit, int cpu, smp_call_func_t func
 SEC("fentry/smp_call_function_many_cond")
 int BPF_PROG(handle_smp_call_function_many_cond_entry, const struct cpumask *mask, smp_call_func_t func, void *info, unsigned int scf_flags, smp_cond_func_t cond_func)
 {
-	const u64 t = bpf_ktime_get_ns();
+	u64 *t;
 
-	bpf_map_update_elem(&call_many_map, &percpu_key, &t, BPF_ANY);
+	t = bpf_map_lookup_elem(&call_many_map, &percpu_key);
+	if (t)
+		*t = bpf_ktime_get_ns();
 
 	return 0;
 }
@@ -208,7 +212,7 @@ int BPF_PROG(handle_csd_queue, unsigned int cpu, void *callsite, void *func, voi
 SEC("tracepoint/csd/csd_function_entry")
 int BPF_PROG(handle_csd_function_entry, void *func, void *csd)
 {
-	u64 *t0, t, slot;
+	u64 *elem, *t0, t, slot;
 	s64 dt;
 	u64 csd_addr = (u64)csd;
 
@@ -226,7 +230,9 @@ int BPF_PROG(handle_csd_function_entry, void *func, void *csd)
 		__sync_fetch_and_add(&queue_lat_hist[slot], 1);
 	}
 
-	bpf_map_update_elem(&csd_func_map, &percpu_key, &t, BPF_ANY);
+	elem = bpf_map_lookup_elem(&csd_func_map, &percpu_key);
+	if (elem)
+		*elem = t;
 
 	return 0;
 }
@@ -333,9 +339,11 @@ int handle_ipi_send_cpumask(struct bpf_raw_tracepoint_args *ctx)
 SEC("fentry/generic_smp_call_function_single_interrupt")
 int handle_call_function_single_entry(void *ctx)
 {
-	u64 t = bpf_ktime_get_ns();
+	u64 *t;
 
-	bpf_map_update_elem(&csd_flush_map, &percpu_key, &t, BPF_ANY);
+	t = bpf_map_lookup_elem(&csd_flush_map, &percpu_key);
+	if (t)
+		*t = bpf_ktime_get_ns();
 
 	return 0;
 }
