@@ -63,6 +63,9 @@ static int event_handler(void *ctx, void *data, size_t sz)
 			const struct ksym *ksym = ksyms__map_addr(ksyms, event->func);
 			printf("csd func %s(%llx) took too long (%llu ms)\n", ksym->name, event->func, event->t / 1000000);
 			break;
+		case CSD_FUNC_STALL:
+			printf("csd func %s(%llx) has not run on cpu %u\n", ksym->name, event->func, event->t / 1000000);
+			break;
 		default:
 			printf("unknown event\n");
 			break;

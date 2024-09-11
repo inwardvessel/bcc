@@ -64,9 +64,8 @@ struct {
 
 struct my_elem {
 	struct bpf_timer timer;
-	u64 csd_addr;
+	u64 func;
 	u32 cpu;
-	bool is_done;
 };
 
 struct {
@@ -112,7 +111,19 @@ static int timer_cb(void *csd_timer_map, u64 *csd_addr, struct my_elem *elem)
 
 	t = bpf_map_lookup_elem(&csd_queue_map, &key);
 	if (t)
-		bpf_printk("found t: %lu", *t);
+		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+		if (!e)
+			return 0;
+
+		e->type = CSD_FUNC_STALL;
+		e->cpu = elem->cpu;
+		e->func = elem->func;
+		/* workaround for reading typedef funcs
+		 * e->func = (u64)func;
+		 */
+		//bpf_probe_read_kernel(&e->func, sizeof(e->func), &ctx[1]);
+		bpf_ringbuf_submit(e, 0);
+	}
 
 	return 0;
 }
@@ -120,7 +131,6 @@ static int timer_cb(void *csd_timer_map, u64 *csd_addr, struct my_elem *elem)
 SEC("fexit/__smp_call_single_queue")
 int BPF_PROG(hadle_smp_call_single_queue, int cpu, struct llist_node *node)
 {
-	u64 t;
 	u64 csd_addr;
 	struct my_elem *elem, init = {};
 	call_single_data_t *csd = container_of(node, call_single_data_t, node.llist);
@@ -128,7 +138,8 @@ int BPF_PROG(hadle_smp_call_single_queue, int cpu, struct llist_node *node)
 		return 0;
 
 	csd_addr = (u64)csd;
-bpf_printk("csd from container_of(): %lx", csd_addr);
+	init.cpu = cpu;
+	init.func = (u64)csd->func;
 	bpf_map_update_elem(&csd_timer_map, &csd_addr, &init, 0);
 	elem = bpf_map_lookup_elem(&csd_timer_map, &csd_addr);
 	if (!elem)
@@ -136,7 +147,9 @@ bpf_printk("csd from container_of(): %lx", csd_addr);
 
 	bpf_timer_init(&elem->timer, &csd_timer_map, CLOCK_MONOTONIC);
 	bpf_timer_set_callback(&elem->timer, timer_cb);
-	bpf_timer_start(&elem->timer, 1, 0);
+	bpf_timer_start(&elem->timer, 1 /* us */, 0 /* flags */);
+
+	//bpf_printk("fexit node:%lx, csd: %lx", (u64)node, (u64)csd);
 
 	return 0;
 }
@@ -244,22 +257,25 @@ int BPF_PROG(handle_smp_call_function_many_cond_exit, const struct cpumask *mask
 }
 
 SEC("tracepoint/csd/csd_queue_cpu")
-int BPF_PROG(handle_csd_queue, unsigned int cpu, void *callsite, void *func, void *csd)
+int handle_csd_queue_cpu(struct trace_event_raw_csd_queue_cpu *ctx)
 {
 	const u64 t = bpf_ktime_get_ns();
-	u64 csd_addr = (u64)csd;
-bpf_printk("csd enqueue: %lx", csd);
+	call_single_data_t *csdp = (call_single_data_t *)ctx->csd;
+	u64 csd_addr = (u64)csdp;
+
 	bpf_map_update_elem(&csd_queue_map, &csd_addr, &t, BPF_NOEXIST);
+
+	//bpf_printk("tp csd:%lx, node:%lx", (u64)csdp, (u64)&csdp->node);
 
 	return 0;
 }
 
 SEC("tracepoint/csd/csd_function_entry")
-int BPF_PROG(handle_csd_function_entry, void *func, void *csd)
+int handle_csd_function_entry(struct trace_event_raw_csd_function *ctx) //void *func, void *csd)
 {
 	u64 *elem, *t0, t, slot;
 	s64 dt;
-	u64 csd_addr = (u64)csd;
+	u64 csd_addr = (u64)ctx->csd;
 
 //bpf_printk("csd entry: %lx", csd);
 	t = bpf_ktime_get_ns();
