@@ -64,6 +64,7 @@ struct {
 
 struct my_elem {
 	struct bpf_timer timer;
+	u64 csd_addr;
 	u32 cpu;
 	bool is_done;
 };
@@ -106,11 +107,11 @@ struct cpumask_ctx {
 
 static int timer_cb(void *csd_timer_map, u64 *csd_addr, struct my_elem *elem)
 {
-	u64 key = (u64)csd_addr;
+	u64 key = *csd_addr;
 	u64 *t;
 
-bpf_printk("callback lookup: %lx, %lx", csd_addr, key);
-	t = bpf_map_lookup_elem(&csd_queue_map, &key);
+
+	t = bpf_map_lookup_elem(&csd_queue_map, &elem->csd_addr);
 	if (t)
 		bpf_printk("found t: %lu", *t);
 
@@ -121,13 +122,15 @@ SEC("fexit/__smp_call_single_queue")
 int BPF_PROG(hadle_smp_call_single_queue, int cpu, struct llist_node *node)
 {
 	u64 key, t;
-	u64 csd_addr;
 	struct my_elem *elem, init = {};
 	call_single_data_t *csd = container_of(node, call_single_data_t, node.llist);
 	if (!csd)
 		return 0;
 
-	csd_addr = (u64)csd;
+	key = (u64)csd;
+	bpf_printk("future lookup: %lx", (u64)csd);
+	init.csd_addr = (u64)csd;
+	init.cpu = (u32)cpu;
 	bpf_map_update_elem(&csd_timer_map, &key, &init, 0);
 	elem = bpf_map_lookup_elem(&csd_timer_map, &key);
 	if (!elem)
@@ -246,8 +249,8 @@ SEC("tracepoint/csd/csd_queue_cpu")
 int BPF_PROG(handle_csd_queue, unsigned int cpu, void *callsite, void *func, void *csd)
 {
 	const u64 t = bpf_ktime_get_ns();
-	u64 csd_addr = (u64)csd;
-bpf_printk("csd queue: %lx", csd);
+	const u64 csd_addr = (u64)csd;
+//bpf_printk("csd queue: %lx", csd);
 	bpf_map_update_elem(&csd_queue_map, &csd_addr, &t, BPF_NOEXIST);
 
 	return 0;
@@ -260,6 +263,7 @@ int BPF_PROG(handle_csd_function_entry, void *func, void *csd)
 	s64 dt;
 	u64 csd_addr = (u64)csd;
 
+//bpf_printk("csd entry: %lx", csd);
 	t = bpf_ktime_get_ns();
 	t0 = bpf_map_lookup_elem(&csd_queue_map, &csd_addr);
 	if (t0) {
