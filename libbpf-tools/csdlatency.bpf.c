@@ -110,8 +110,7 @@ static int timer_cb(void *csd_timer_map, u64 *csd_addr, struct my_elem *elem)
 	u64 key = *csd_addr;
 	u64 *t;
 
-
-	t = bpf_map_lookup_elem(&csd_queue_map, &elem->csd_addr);
+	t = bpf_map_lookup_elem(&csd_queue_map, &key);
 	if (t)
 		bpf_printk("found t: %lu", *t);
 
@@ -121,18 +120,17 @@ static int timer_cb(void *csd_timer_map, u64 *csd_addr, struct my_elem *elem)
 SEC("fexit/__smp_call_single_queue")
 int BPF_PROG(hadle_smp_call_single_queue, int cpu, struct llist_node *node)
 {
-	u64 key, t;
+	u64 t;
+	u64 csd_addr;
 	struct my_elem *elem, init = {};
 	call_single_data_t *csd = container_of(node, call_single_data_t, node.llist);
 	if (!csd)
 		return 0;
 
-	key = (u64)csd;
-	bpf_printk("future lookup: %lx", (u64)csd);
-	init.csd_addr = (u64)csd;
-	init.cpu = (u32)cpu;
-	bpf_map_update_elem(&csd_timer_map, &key, &init, 0);
-	elem = bpf_map_lookup_elem(&csd_timer_map, &key);
+	csd_addr = (u64)csd;
+bpf_printk("csd from container_of(): %lx", csd_addr);
+	bpf_map_update_elem(&csd_timer_map, &csd_addr, &init, 0);
+	elem = bpf_map_lookup_elem(&csd_timer_map, &csd_addr);
 	if (!elem)
 		return 0;
 
@@ -249,8 +247,8 @@ SEC("tracepoint/csd/csd_queue_cpu")
 int BPF_PROG(handle_csd_queue, unsigned int cpu, void *callsite, void *func, void *csd)
 {
 	const u64 t = bpf_ktime_get_ns();
-	const u64 csd_addr = (u64)csd;
-//bpf_printk("csd queue: %lx", csd);
+	u64 csd_addr = (u64)csd;
+bpf_printk("csd enqueue: %lx", csd);
 	bpf_map_update_elem(&csd_queue_map, &csd_addr, &t, BPF_NOEXIST);
 
 	return 0;
