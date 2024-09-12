@@ -104,18 +104,18 @@ struct cpumask_ctx {
 	struct cpumask *cpumask;
 };
 
-static int csd_timer_cb(void *csd_timer_map, u64 *key, struct csd_timer_elem *elem)
+static int csd_timer_cb(void *map, u64 *key, struct csd_timer_elem *elem)
 {
 	u64 *t;
 	s64 dt;
 
 	t = bpf_map_lookup_elem(&csd_queue_map, key);
 	if (!t)
-		return 0;
+		goto cleanup;
 
 	dt = (s64)(bpf_ktime_get_ns() - *t);
 	if (dt < 0)
-		return 0;
+		goto cleanup;
 
 	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (e) {
@@ -124,6 +124,9 @@ static int csd_timer_cb(void *csd_timer_map, u64 *key, struct csd_timer_elem *el
 		e->t = dt;
 		bpf_ringbuf_submit(e, 0);
 	}
+
+cleanup:
+	bpf_map_delete_elem(map, key);
 
 	return 0;
 }
