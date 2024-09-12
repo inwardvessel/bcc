@@ -9,7 +9,7 @@ enum latency_event_type {
 	CSD_CALL_MANY_LATENCY,
 	CSD_FLUSH_LATENCY,
 	CSD_FUNC_LATENCY,
-	CSD_FUNC_STALL
+	CSD_CPU_LATENCY
 };
 
 struct event {

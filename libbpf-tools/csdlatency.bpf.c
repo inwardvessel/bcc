@@ -6,6 +6,8 @@
 #include "csdlatency.h"
 #include "bits.bpf.h"
 
+#define CLOCK_MONOTONIC 1
+
 extern void generic_smp_call_function_single_interrupt(void) __ksym;
 
 extern bool bpf_cpumask_test_cpu(u32 cpu, const struct cpumask *cpumask) __ksym;
@@ -21,6 +23,7 @@ const volatile __u64 call_many_threshold_ms;
 const volatile __u64 queue_lat_threshold_ms;
 const volatile __u64 queue_flush_threshold_ms;
 const volatile __u64 csd_func_threshold_ms;
+const volatile __u64 cpu_lat_threshold_ms;
 
 static __u64 conv_ms_to_ns(__u64 ms)
 {
@@ -62,9 +65,8 @@ struct {
 	__type(value, u64);
 } csd_flush_map SEC(".maps");
 
-struct my_elem {
+struct csd_timer_elem {
 	struct bpf_timer timer;
-	u64 func;
 	u32 cpu;
 };
 
@@ -72,7 +74,7 @@ struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
 	__type(key, u64); /* csd addr */
-	__type(value, struct my_elem);
+	__type(value, struct csd_timer_elem);
 } csd_timer_map SEC(".maps");
 
 struct {
@@ -102,26 +104,24 @@ struct cpumask_ctx {
 	struct cpumask *cpumask;
 };
 
-#define CLOCK_MONOTONIC 1
-
-static int timer_cb(void *csd_timer_map, u64 *csd_addr, struct my_elem *elem)
+static int csd_timer_cb(void *csd_timer_map, u64 *key, struct csd_timer_elem *elem)
 {
-	u64 key = *csd_addr;
 	u64 *t;
+	s64 dt;
 
-	t = bpf_map_lookup_elem(&csd_queue_map, &key);
-	if (t)
-		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-		if (!e)
-			return 0;
+	t = bpf_map_lookup_elem(&csd_queue_map, key);
+	if (!t)
+		return 0;
 
-		e->type = CSD_FUNC_STALL;
+	dt = (s64)(bpf_ktime_get_ns() - *t);
+	if (dt < 0)
+		return 0;
+
+	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (e) {
+		e->type = CSD_CPU_LATENCY;
 		e->cpu = elem->cpu;
-		e->func = elem->func;
-		/* workaround for reading typedef funcs
-		 * e->func = (u64)func;
-		 */
-		//bpf_probe_read_kernel(&e->func, sizeof(e->func), &ctx[1]);
+		e->t = dt;
 		bpf_ringbuf_submit(e, 0);
 	}
 
@@ -129,27 +129,25 @@ static int timer_cb(void *csd_timer_map, u64 *csd_addr, struct my_elem *elem)
 }
 
 SEC("fexit/__smp_call_single_queue")
-int BPF_PROG(hadle_smp_call_single_queue, int cpu, struct llist_node *node)
+int BPF_PROG(handle_smp_call_single_queue, int cpu, struct llist_node *node)
 {
 	u64 csd_addr;
-	struct my_elem *elem, init = {};
+	struct csd_timer_elem *elem, init = {
+		.cpu = cpu
+	};
 	call_single_data_t *csd = container_of(node, call_single_data_t, node.llist);
 	if (!csd)
 		return 0;
 
 	csd_addr = (u64)csd;
-	init.cpu = cpu;
-	init.func = (u64)csd->func;
 	bpf_map_update_elem(&csd_timer_map, &csd_addr, &init, 0);
 	elem = bpf_map_lookup_elem(&csd_timer_map, &csd_addr);
 	if (!elem)
 		return 0;
 
 	bpf_timer_init(&elem->timer, &csd_timer_map, CLOCK_MONOTONIC);
-	bpf_timer_set_callback(&elem->timer, timer_cb);
-	bpf_timer_start(&elem->timer, 1 /* us */, 0 /* flags */);
-
-	//bpf_printk("fexit node:%lx, csd: %lx", (u64)node, (u64)csd);
+	bpf_timer_set_callback(&elem->timer, csd_timer_cb);
+	bpf_timer_start(&elem->timer, conv_ms_to_ns(cpu_lat_threshold_ms), 0);
 
 	return 0;
 }
@@ -260,12 +258,9 @@ SEC("tracepoint/csd/csd_queue_cpu")
 int handle_csd_queue_cpu(struct trace_event_raw_csd_queue_cpu *ctx)
 {
 	const u64 t = bpf_ktime_get_ns();
-	call_single_data_t *csdp = (call_single_data_t *)ctx->csd;
-	u64 csd_addr = (u64)csdp;
+	const u64 csd_addr = (u64)ctx->csd;
 
 	bpf_map_update_elem(&csd_queue_map, &csd_addr, &t, BPF_NOEXIST);
-
-	//bpf_printk("tp csd:%lx, node:%lx", (u64)csdp, (u64)&csdp->node);
 
 	return 0;
 }
@@ -277,7 +272,6 @@ int handle_csd_function_entry(struct trace_event_raw_csd_function *ctx) //void *
 	s64 dt;
 	u64 csd_addr = (u64)ctx->csd;
 
-//bpf_printk("csd entry: %lx", csd);
 	t = bpf_ktime_get_ns();
 	t0 = bpf_map_lookup_elem(&csd_queue_map, &csd_addr);
 	if (t0) {
