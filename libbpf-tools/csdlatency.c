@@ -16,6 +16,7 @@ static struct env {
 	__u64 queue_lat_threshold_ms;
 	__u64 queue_flush_threshold_ms;
 	__u64 csd_func_threshold_ms;
+	__u64 cpu_lat_threshold_ms;
 } env = {
 	.interval = 1,
 	.nr_intervals = 10,
@@ -24,7 +25,8 @@ static struct env {
 	.call_many_threshold_ms = 500,
 	.queue_lat_threshold_ms = 500,
 	.queue_flush_threshold_ms = 500,
-	.csd_func_threshold_ms = 500
+	.csd_func_threshold_ms = 500,
+	.cpu_lat_threshold_ms = 100
 };
 
 static int nr_cpus = -1;
@@ -37,7 +39,8 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 
 static int event_handler(void *ctx, void *data, size_t sz)
 {
-	struct event *event = (struct event *)data;
+	const struct event *event = (struct event *)data;
+	const struct ksym *ksym;
 
 	switch (event->type) {
 		case CSD_CALL_SINGLE_LATENCY:
@@ -54,14 +57,17 @@ static int event_handler(void *ctx, void *data, size_t sz)
 
 			for (i = 0; i < event->stack_sz / sizeof(event->stack[0]); ++i) {
 				const uint64_t addr = event->stack[i];
-				const struct ksym *ksym = ksyms__map_addr(ksyms, addr);
+				ksym = ksyms__map_addr(ksyms, addr);
 				printf("%zu: %s\n", i, ksym->name);
 			}
 
 			break;
 		case CSD_FUNC_LATENCY:
-			const struct ksym *ksym = ksyms__map_addr(ksyms, event->func);
+			ksym = ksyms__map_addr(ksyms, event->func);
 			printf("csd func %s(%llx) took too long (%llu ms)\n", ksym->name, event->func, event->t / 1000000);
+			break;
+		case CSD_CPU_LATENCY:
+			printf("a csd func has been waiting for %llu ms to run on cpu %u\n", event->t / 1000000, event->cpu);
 			break;
 		default:
 			printf("unknown event\n");
@@ -124,6 +130,7 @@ int main(int argc, char **argv)
 	skel->rodata->queue_lat_threshold_ms = env.queue_lat_threshold_ms;
 	skel->rodata->queue_flush_threshold_ms = env.queue_flush_threshold_ms;
 	skel->rodata->csd_func_threshold_ms = env.csd_func_threshold_ms;
+	skel->rodata->cpu_lat_threshold_ms = env.cpu_lat_threshold_ms;
 
 	size_t sz = bpf_map__set_value_size(skel->maps.data_ipi_cpu_hist, sizeof(skel->data_ipi_cpu_hist->ipi_cpu_hist[0]) * nr_cpus);
 	skel->data_ipi_cpu_hist = bpf_map__initial_value(skel->maps.data_ipi_cpu_hist, &sz);
