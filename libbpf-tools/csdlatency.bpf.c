@@ -23,7 +23,6 @@ const volatile __u64 call_many_threshold_ms;
 const volatile __u64 queue_lat_threshold_ms;
 const volatile __u64 queue_flush_threshold_ms;
 const volatile __u64 csd_func_threshold_ms;
-const volatile __u64 cpu_lat_threshold_ms;
 
 static __u64 conv_ms_to_ns(__u64 ms)
 {
@@ -65,18 +64,6 @@ struct {
 	__type(value, u64);
 } csd_flush_map SEC(".maps");
 
-struct csd_timer_elem {
-	struct bpf_timer timer;
-	u32 cpu;
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 1024);
-	__type(key, u64); /* csd addr */
-	__type(value, struct csd_timer_elem);
-} csd_timer_map SEC(".maps");
-
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 256 * 1024);
@@ -103,57 +90,6 @@ __u32 ipi_cpu_hist[1] SEC(".data.ipi_cpu_hist");
 struct cpumask_ctx {
 	struct cpumask *cpumask;
 };
-
-static int csd_timer_cb(void *map, u64 *key, struct csd_timer_elem *elem)
-{
-	u64 *t;
-	s64 dt;
-
-	t = bpf_map_lookup_elem(&csd_queue_map, key);
-	if (!t)
-		goto cleanup;
-
-	dt = (s64)(bpf_ktime_get_ns() - *t);
-	if (dt < 0)
-		goto cleanup;
-
-	struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-	if (e) {
-		e->type = CSD_CPU_LATENCY;
-		e->cpu = elem->cpu;
-		e->t = dt;
-		bpf_ringbuf_submit(e, 0);
-	}
-
-cleanup:
-	bpf_map_delete_elem(map, key);
-
-	return 0;
-}
-
-SEC("fexit/__smp_call_single_queue")
-int BPF_PROG(handle_smp_call_single_queue, int cpu, struct llist_node *node)
-{
-	u64 csd_addr;
-	struct csd_timer_elem *elem, init = {
-		.cpu = cpu
-	};
-	call_single_data_t *csd = container_of(node, call_single_data_t, node.llist);
-	if (!csd)
-		return 0;
-
-	csd_addr = (u64)csd;
-	bpf_map_update_elem(&csd_timer_map, &csd_addr, &init, 0);
-	elem = bpf_map_lookup_elem(&csd_timer_map, &csd_addr);
-	if (!elem)
-		return 0;
-
-	bpf_timer_init(&elem->timer, &csd_timer_map, CLOCK_MONOTONIC);
-	bpf_timer_set_callback(&elem->timer, csd_timer_cb);
-	bpf_timer_start(&elem->timer, conv_ms_to_ns(cpu_lat_threshold_ms), 0);
-
-	return 0;
-}
 
 SEC("fentry/smp_call_function_single")
 int BPF_PROG(handle_smp_call_function_single_entry, int cpu, smp_call_func_t func, void *info, int wait)
