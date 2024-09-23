@@ -223,6 +223,16 @@ int handle_csd_function_entry(struct trace_event_raw_csd_function *ctx) //void *
 		if (slot >= MAX_SLOTS)
 			slot = MAX_SLOTS - 1;
 		__sync_fetch_and_add(&queue_lat_hist[slot], 1);
+
+		if (dt >= conv_ms_to_ns(queue_lat_threshold_ms)) {
+			struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+			if (e) {
+				e->type = CSD_QUEUE_LATENCY;
+				e->t = dt;
+				e->cpu = bpf_get_smp_processor_id();
+				bpf_ringbuf_submit(e, 0);
+			}
+		}
 	}
 
 	elem = bpf_map_lookup_elem(&csd_func_map, &percpu_key);

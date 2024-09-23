@@ -47,6 +47,9 @@ static int event_handler(void *ctx, void *data, size_t sz)
 		case CSD_CALL_MANY_LATENCY:
 			printf("smp_call_function_many*() took too long (%llu ms)\n", event->t / 1000000);
 			break;
+		case CSD_QUEUE_LATENCY:
+			printf("a csd func has waited for %llu ms to run on cpu %u\n", event->t / 1000000, event->cpu);
+			break;
 		case CSD_FLUSH_LATENCY:
 			size_t i;
 
