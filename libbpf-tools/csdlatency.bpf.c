@@ -16,18 +16,7 @@ extern bool bpf_cpumask_test_cpu(u32 cpu, const struct cpumask *cpumask) __ksym;
 static const __u32 percpu_key = 0;
 
 const volatile __u32 nr_cpus;
-
-/* latency thresholds for notifying userspace when exceeded */
-const volatile __u64 call_single_threshold_ms;
-const volatile __u64 call_many_threshold_ms;
-const volatile __u64 queue_lat_threshold_ms;
-const volatile __u64 queue_flush_threshold_ms;
-const volatile __u64 csd_func_threshold_ms;
-
-static __u64 conv_ms_to_ns(__u64 ms)
-{
-	return ms * 1000000;
-}
+const volatile __u64 latency_threshold_ns;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -124,7 +113,7 @@ int BPF_PROG(handle_smp_call_function_single_exit, int cpu, smp_call_func_t func
 
 	__sync_fetch_and_add(&call_single_hist[slot], 1);
 
-	if (dt >= conv_ms_to_ns(call_single_threshold_ms)) {
+	if (dt >= latency_threshold_ns) {
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 		if (!e)
 			return 0;
@@ -175,7 +164,7 @@ int BPF_PROG(handle_smp_call_function_many_cond_exit, const struct cpumask *mask
 
 	__sync_fetch_and_add(&call_many_hist[slot], 1);
 
-	if (dt >= conv_ms_to_ns(call_many_threshold_ms)) {
+	if (dt >= latency_threshold_ns) {
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 		if (!e)
 			return 0;
@@ -224,7 +213,7 @@ int handle_csd_function_entry(struct trace_event_raw_csd_function *ctx) //void *
 			slot = MAX_SLOTS - 1;
 		__sync_fetch_and_add(&queue_lat_hist[slot], 1);
 
-		if (dt >= conv_ms_to_ns(queue_lat_threshold_ms)) {
+		if (dt >= latency_threshold_ns) {
 			struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 			if (e) {
 				e->type = CSD_QUEUE_LATENCY;
@@ -262,7 +251,7 @@ int handle_csd_function_exit(struct trace_event_raw_csd_function *ctx)
 		slot = MAX_SLOTS - 1;
 	__sync_fetch_and_add(&func_lat_hist[slot], 1);
 
-	if (dt >= conv_ms_to_ns(csd_func_threshold_ms)) {
+	if (dt >= latency_threshold_ns) {
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 		if (!e)
 			return 0;
@@ -373,7 +362,7 @@ int handle_call_function_single_exit(void *ctx)
 		slot = MAX_SLOTS - 1;
 	__sync_fetch_and_add(&queue_flush_hist[slot], 1);
 
-	if (dt >= conv_ms_to_ns(queue_flush_threshold_ms)) {
+	if (dt >= latency_threshold_ns) {
 		struct event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 		if (!e)
 			return 0;

@@ -11,24 +11,26 @@ static struct env {
 	int interval; /* dump histograms every N seconds */
 	int nr_intervals; /* exit program after N intervals, ignore if negative */
 	int perf_max_stack_depth;
-	__u64 call_single_threshold_ms; /* report when smp_call_function_single() exceeds this */
-	__u64 call_many_threshold_ms; /* report when smp_call_function_many() exceeds this */
-	__u64 queue_lat_threshold_ms;
-	__u64 queue_flush_threshold_ms;
-	__u64 csd_func_threshold_ms;
+	__u64 latency_threshold_ms; /* report when given latency exceeds this */
 } env = {
 	.interval = 1,
 	.nr_intervals = 10,
 	.perf_max_stack_depth = 127, /* from sysctl kernel.perf_event_max_stack */
-	.call_single_threshold_ms = 500,
-	.call_many_threshold_ms = 500,
-	.queue_lat_threshold_ms = 500,
-	.queue_flush_threshold_ms = 500,
-	.csd_func_threshold_ms = 500,
+	.latency_threshold_ms = 500
 };
 
 static int nr_cpus = -1;
 static struct ksyms *ksyms;
+
+inline uint64_t conv_ms_to_ns(uint64_t ms)
+{
+	return ms * 1000000;
+}
+
+inline uint64_t conv_ns_to_ms(uint64_t ms)
+{
+	return ms / 1000000;
+}
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
@@ -122,12 +124,7 @@ int main(int argc, char **argv)
 	}
 
 	skel->rodata->nr_cpus = nr_cpus;
-
-	skel->rodata->call_single_threshold_ms = env.call_single_threshold_ms;
-	skel->rodata->call_many_threshold_ms = env.call_many_threshold_ms;
-	skel->rodata->queue_lat_threshold_ms = env.queue_lat_threshold_ms;
-	skel->rodata->queue_flush_threshold_ms = env.queue_flush_threshold_ms;
-	skel->rodata->csd_func_threshold_ms = env.csd_func_threshold_ms;
+	skel->rodata->latency_threshold_ns = conv_ms_to_ns(env.latency_threshold_ms);
 
 	size_t sz = bpf_map__set_value_size(skel->maps.data_ipi_cpu_hist, sizeof(skel->data_ipi_cpu_hist->ipi_cpu_hist[0]) * nr_cpus);
 	skel->data_ipi_cpu_hist = bpf_map__initial_value(skel->maps.data_ipi_cpu_hist, &sz);
