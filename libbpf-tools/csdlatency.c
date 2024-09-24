@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 // Copyright (c) 2024 Meta Platforms, Inc. and affiliates.
+#include <argp.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include "csdlatency.h"
 #include "csdlatency.skel.h"
@@ -17,6 +19,25 @@ static struct env {
 	.nr_intervals = 10,
 	.perf_max_stack_depth = 127, /* from sysctl kernel.perf_event_max_stack */
 	.latency_threshold_ms = 500
+};
+
+const char *argp_program_version = "csdlatency 0.1";
+const char *argp_program_bug_address =
+	"https://github.com/iovisor/bcc/tree/master/libbpf-tools";
+
+const char argp_args_doc[] =
+"Trace latencies within CSD pipeline\n"
+"\n"
+"USAGE: csdlatency [-h] [-t LATENCY_THRESHOLD] [INTERVAL] [INTERVALS]\n"
+"\n"
+"EXAMPLES:\n"
+"./csdlatency 5\n"
+"        Trace CSD latencies and dump histograms every 5 seconds\n"
+"";
+
+static const struct argp_option argp_options[] = {
+	{"latency-threshold", 't', "LATENCY_THRESHOLD", 0, "max latency", 0 },
+	{},
 };
 
 static int nr_cpus = -1;
@@ -99,16 +120,34 @@ static void dump_histograms(const struct csdlatency_bpf *skel)
 
 	printf("frequency of csd ipi's sent to cpu's\n");
 	print_linear_hist(skel->data_ipi_cpu_hist->ipi_cpu_hist, nr_cpus, 0, 1, "cpu");
+
+	printf("latency of csd func enqueue to remote function entry\n");
+	print_log2_hist(skel->bss->queue_lat_hist, MAX_SLOTS, "nsec");
 }
 
-int main(int argc, char **argv)
+static long argp_parse_long(int key, const char *arg, struct argp_state *state);
+static error_t argp_parse_arg(int key, char *arg, struct argp_state *state);
+
+int main(int argc, char *argv[])
 {
 	struct csdlatency_bpf *skel;
 	struct ring_buffer *rb;
 	int err;
 
-	nr_cpus = libbpf_num_possible_cpus();
+	static const struct argp argp = {
+		.options = argp_options,
+		.parser = argp_parse_arg,
+		.doc = argp_args_doc,
+	};
 
+
+	if (argp_parse(&argp, argc, argv, 0, NULL, NULL)) {
+		fprintf(stderr, "failed to parse args\n");
+
+		return 1;
+	}
+
+	nr_cpus = libbpf_num_possible_cpus();
 	ksyms = ksyms__load();
 	if (!ksyms) {
 		fprintf(stderr, "failed to load ksyms\n");
@@ -161,4 +200,48 @@ int main(int argc, char **argv)
 cleanup:
 	csdlatency_bpf__destroy(skel);
 	return -err;
+}
+
+long argp_parse_long(int key, const char *arg, struct argp_state *state)
+{
+	errno = 0;
+	const long temp = strtol(arg, NULL, 10);
+	if (errno || temp <= 0) {
+		fprintf(stderr, "error arg:%c %s\n", (char)key, arg);
+		argp_usage(state);
+	}
+
+	return temp;
+}
+
+error_t argp_parse_arg(int key, char *arg, struct argp_state *state)
+{
+	static int pos_args = 0;
+
+	switch (key) {
+	case 't':
+		printf("arg t\n");
+		env.latency_threshold_ms = argp_parse_long(key, arg, state);
+		break;
+	case ARGP_KEY_ARG:
+		pos_args++;
+		printf("pos arg %d\n", pos_args);
+
+		if (pos_args == 1) {
+			env.interval = argp_parse_long(key, arg, state);
+		}
+		else if (pos_args == 2) {
+			env.nr_intervals = argp_parse_long(key, arg, state);
+		} else {
+			fprintf(stderr, "Unrecognized positional argument: %s\n", arg);
+			argp_usage(state);
+		}
+
+		break;
+	default:
+		printf("arg unknown\n");
+		return ARGP_ERR_UNKNOWN;
+	}
+
+	return 0;
 }
