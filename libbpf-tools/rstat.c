@@ -16,7 +16,7 @@ static struct env {
 	__u64 latency_threshold_ms; /* report when given latency exceeds this */
 } env = {
 	.interval = 1,
-	.nr_intervals = 10,
+	.nr_intervals = 1,
 	.perf_max_stack_depth = 127, /* from sysctl kernel.perf_event_max_stack */
 	.latency_threshold_ms = 500
 };
@@ -61,7 +61,6 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 static int event_handler(void *ctx, void *data, size_t sz)
 {
 	const struct event *event = (struct event *)data;
-	const struct ksym *ksym;
 
 	switch (event->type) {
 		default:
@@ -77,10 +76,10 @@ static void dump_histograms(const struct rstat_bpf *skel)
 	if (nr_cpus < 1)
 		return;
 
-	printf("frequency of csd ipi's sent to cpu's\n");
-	print_linear_hist(skel->data_ipi_cpu_hist->ipi_cpu_hist, nr_cpus, 0, 1, "cpu");
+	printf("frequency\n");
+	print_linear_hist(skel->data_my_array->my_array, nr_cpus, 0, 1, "cpu");
 
-	//printf("latency of csd func enqueue to remote function entry\n");
+	//printf("latency\n");
 	//print_log2_hist(skel->bss->queue_lat_hist, MAX_SLOTS, "nsec");
 }
 
@@ -124,10 +123,10 @@ int main(int argc, char *argv[])
 	skel->rodata->nr_cpus = nr_cpus;
 	skel->rodata->latency_threshold_ns = conv_ms_to_ns(env.latency_threshold_ms);
 
-	size_t sz = bpf_map__set_value_size(skel->maps.data_ipi_cpu_hist, sizeof(skel->data_ipi_cpu_hist->ipi_cpu_hist[0]) * nr_cpus);
-	skel->data_ipi_cpu_hist = bpf_map__initial_value(skel->maps.data_ipi_cpu_hist, &sz);
+	size_t sz = bpf_map__set_value_size(skel->maps.data_my_array, sizeof(skel->data_my_array->my_array[0]) * nr_cpus);
+	skel->data_my_array = bpf_map__initial_value(skel->maps.data_my_array, &sz);
 
-	bpf_map__set_max_entries(skel->maps.csd_queue_map, nr_cpus * 2);
+	//bpf_map__set_max_entries(skel->maps.my_map, nr_cpus * 2);
 
 	err = rstat_bpf__load(skel);
 	if (err) {
