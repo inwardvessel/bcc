@@ -72,6 +72,7 @@ APPS = \
 	oomkill \
 	profile \
 	readahead \
+	rstat \
 	runqlat \
 	runqlen \
 	runqslower \
