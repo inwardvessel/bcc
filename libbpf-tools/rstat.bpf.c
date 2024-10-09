@@ -20,7 +20,9 @@ int BPF_PROG(handle__mod_memcg_state, struct mem_cgroup *memcg, int idx, int val
 	if (idx < 0 || idx >= MAX_STATS)
 		idx = MAX_STATS - 1;
 
-	__sync_fetch_and_add(&stat_update_count[idx], 1);
+	if (val < 0)
+		val = -val;
+	__sync_fetch_and_add(&stat_update_count[idx], val);
 
 	return 0;
 }
@@ -32,7 +34,9 @@ int BPF_PROG(handle__mod_memcg_lruvec_state, struct lruvec *lruvec, enum node_st
 	if (idx < 0 || idx >= MAX_STATS)
 		idx = MAX_STATS - 1;
 
-	__sync_fetch_and_add(&stat_update_count[idx], 1);
+	if (val < 0)
+		val = -val;
+	__sync_fetch_and_add(&stat_update_count[idx], val);
 
 	return 0;
 }
@@ -44,7 +48,7 @@ int BPF_PROG(handle__count_memcg_events, struct mem_cgroup *memcg, enum vm_event
 	if (idx < 0 || idx >= MAX_EVENTS)
 		idx = MAX_EVENTS - 1;
 
-	__sync_fetch_and_add(&event_update_count[idx], 1);
+	__sync_fetch_and_add(&event_update_count[idx], count);
 
 	return 0;
 }
