@@ -27,7 +27,7 @@ int BPF_PROG(handle__mod_memcg_state, struct mem_cgroup *memcg, int idx, int val
 	return 0;
 }
 
-SEC("fentry/__mod_memcg_lruvec_state")
+SEC("fentry/__mod_lruvec_state")
 int BPF_PROG(handle__mod_memcg_lruvec_state, struct lruvec *lruvec, enum node_stat_item idx,
 		                  int val)
 {
