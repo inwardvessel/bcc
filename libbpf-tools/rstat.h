@@ -2,7 +2,6 @@
 // Copyright (c) 2024 Meta Platforms, Inc. and affiliates.
 
 #define PERF_EVENT_MAX_STACK 127
-#define MAX_SLOTS 32
 
 enum latency_event_type {
 	CSD_CALL_SINGLE_LATENCY,
