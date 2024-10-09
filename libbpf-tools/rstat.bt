@@ -1,0 +1,24 @@
+#!/usr/bin/env bpftrace
+
+kfunc:__mod_memcg_state
+{
+	$val = args.val;
+	if (args.val < 0) {
+		$val = (int32)-args.val;
+	}
+	@stat_update_count[args.idx] += (uint64)$val;
+}
+
+kfunc:__mod_lruvec_state
+{
+	$val = args.val;
+	if (args.val < 0) {
+		$val = (int32)-args.val;
+	}
+	@stat_update_count[args.idx] += (uint64)$val;
+}
+
+kfunc:__count_memcg_events
+{
+	@event_update_count[args.idx] += 1;
+}
