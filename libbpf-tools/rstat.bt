@@ -6,19 +6,19 @@ kfunc:__mod_memcg_state
 	if (args.val < 0) {
 		$val = (int32)-args.val;
 	}
-	@stat_update_count[args.idx] += (uint64)$val;
+	@memcg_state_update_count[args.idx] += (uint64)$val;
 }
 
-kfunc:__mod_lruvec_state
+kfunc:__mod_memcg_lruvec_state
 {
 	$val = args.val;
 	if (args.val < 0) {
 		$val = (int32)-args.val;
 	}
-	@stat_update_count[args.idx] += (uint64)$val;
+	@memcg_lruvec_state_update_count[args.idx] += (uint64)$val;
 }
 
 kfunc:__count_memcg_events
 {
-	@event_update_count[args.idx] += 1;
+	@event_update_count[args.idx] += args.count;
 }
