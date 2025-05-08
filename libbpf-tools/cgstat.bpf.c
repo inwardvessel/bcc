@@ -13,6 +13,8 @@ struct {
 	__uint(max_entries, 1024); /* one kB */
 } rb SEC(".maps");
 
+extern void bpf_cgroup_rstat_flush(struct cgroup *cgrp) __ksym;
+
 extern bool mem_stat_skip(int i) __ksym;
 extern const char *mem_stat_name(int i) __ksym;
 extern int mem_stat_item(int i) __ksym;
@@ -20,8 +22,8 @@ extern int mem_stat_index(int idx) __ksym;
 extern int mem_stat_unit(int item) __ksym;
 extern bool mem_stat_is_slab_unreclaimable_b(int i) __ksym;
 extern int memcg_events_index(enum vm_event_item idx) __ksym;
-size_t memcg_event_count(void) __ksym;
-const char *memcg_event_name(enum vm_event_item item) __ksym;
+extern size_t memcg_event_count(void) __ksym;
+extern const char *memcg_event_name(enum vm_event_item item) __ksym;
 
 struct visit_ctx {
 	struct mem_cgroup *memcg;
@@ -82,7 +84,7 @@ static long memcg_event_visit(u32 i, void *ctx)
 	return 0;
 }
 
-SEC("iter/cgroup")
+SEC("iter.s/cgroup")
 int memcg_iter(struct bpf_iter__cgroup *ctx)
 {
 	struct cgroup *cgrp;
@@ -93,6 +95,8 @@ int memcg_iter(struct bpf_iter__cgroup *ctx)
 
 	if (!cgrp || !memcg)
 		return 1;
+
+	bpf_cgroup_rstat_flush(cgrp);
 
 	struct visit_ctx visit_ctx = {
 		.memcg = memcg

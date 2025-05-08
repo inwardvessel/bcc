@@ -6,14 +6,15 @@
 #include <unistd.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
-#include "cgstat.h"
-#include "cgstat.skel.h"
+#include "memcgstat.h"
+#include "memcgstat.skel.h"
+
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	struct mem_stat_event *e = data;
 
-	printf("%s %llu\n", e->name, e->size);
+	printf("%s %llu\n", e->name, e->val);
 
 	return 0;
 }
@@ -21,9 +22,9 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 int main()
 {
 	int ret = 0;
-	struct cgstat_bpf *skel;
+	struct memcgstat_bpf *skel;
 
-	skel = cgstat_bpf__open_and_load();
+	skel = memcgstat_bpf__open_and_load();
 	if (!skel) {
 		fprintf(stderr, "failed to open/load bpf object\n");
 		ret = 1;
@@ -89,7 +90,7 @@ int main()
 	bpf_link__destroy(link);
 	ring_buffer__free(rb);
 cleanup:
-	cgstat_bpf__destroy(skel);
+	memcgstat_bpf__destroy(skel);
 
 	return ret;
 }
