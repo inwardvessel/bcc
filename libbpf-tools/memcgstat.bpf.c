@@ -6,7 +6,7 @@
 #include <bpf/bpf_core_read.h>
 #include "memcgstat.h"
 
-char _license[] SEC("license") = "GPL";
+char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 extern void memcg_flush_stats(struct cgroup *cgrp) __ksym;
 extern unsigned long memcg_node_stat_fetch(struct cgroup *cgrp, enum node_stat_item item) __ksym;
@@ -35,8 +35,6 @@ long results[1] SEC(".data.results");
 SEC("iter/cgroup")
 int BPF_PROG(query, struct bpf_iter_meta *meta, struct cgroup *cgrp)
 {
-	struct seq_file *seq = meta->seq;
-
 	if (!cgrp)
 		return 1;
 
@@ -185,8 +183,6 @@ int BPF_PROG(query, struct bpf_iter_meta *meta, struct cgroup *cgrp)
 				break;
 		}
 	}
-
-	bpf_seq_write(seq, results, sizeof(results[0]) * USER_ITEM_COUNT);
 
 	return 0;
 }

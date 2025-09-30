@@ -201,14 +201,9 @@ int main()
 		ret = bytes;
 		goto cleanup;
 	}
-	if (bytes != sz) {
-		fprintf(stderr, "read: expected %zu bytes, got %zu\n", sz, bytes);
-		ret = 1;
-		goto cleanup;
-	}
 
 	for (i = 0; i < skel->rodata->nr_items - 1; i++) {
-		printf("%s:%d\n", names[i], values[i]);
+		printf("%s:%lu\n", names[i], skel->data_results->results[i]);
 	}
 
 cleanup:
