@@ -9,17 +9,99 @@
 #include "memcgstat.skel.h"
 
 static enum memcg_item items[] = {
+	USER_NR_ANON_MAPPED,
+	USER_NR_FILE_PAGES,
+	USER_NR_KERNEL_STACK_KB,
+	USER_NR_SHMEM,
+	USER_NR_FILE_MAPPED,
+	USER_NR_FILE_DIRTY,
+	USER_NR_WRITEBACK,
+	USER_NR_FILE_THPS,
+	USER_NR_ANON_THPS,
 	USER_NR_INACTIVE_ANON,
 	USER_NR_ACTIVE_ANON,
 	USER_NR_INACTIVE_FILE,
 	USER_NR_ACTIVE_FILE,
+	USER_NR_UNEVICTABLE,
+	USER_NR_SLAB_RECLAIMABLE_B,
+	USER_NR_SLAB_UNRECLAIMABLE_B,
+	USER_WORKINGSET_REFAULT_ANON,
+	USER_WORKINGSET_REFAULT_FILE,
+	USER_WORKINGSET_ACTIVATE_ANON,
+	USER_WORKINGSET_ACTIVATE_FILE,
+	USER_WORKINGSET_RESTORE_ANON,
+	USER_WORKINGSET_RESTORE_FILE,
+	USER_WORKINGSET_NODERECLAIM,
+	USER_MEMCG_KMEM,
+	USER_MEMCG_SOCK,
+	USER_MEMCG_ZSWAP_B,
+	USER_MEMCG_ZSWAPPED,
+	USER_PGSCAN_KSWAPD,
+	USER_PGSCAN_DIRECT,
+	USER_PGSCAN_KHUGEPAGED,
+	USER_PGSCAN_PROACTIVE,
+	USER_PGSTEAL_KSWAPD,
+	USER_PGSTEAL_DIRECT,
+	USER_PGSTEAL_KHUGEPAGED,
+	USER_PGSTEAL_PROACTIVE,
+	USER_PGFAULT,
+	USER_PGMAJFAULT,
+	USER_PGREFILL,
+	USER_PGACTIVATE,
+	USER_PGDEACTIVATE,
+	USER_PGLAZYFREE,
+	USER_PGLAZYFREED,
+	USER_THP_FAULT_ALLOC,
+	USER_THP_COLLAPSE_ALLOC,
+	USER_ITEM_COUNT
 };
 
 static char *names[] = {
-	"inactive_anon",
-	"active_anon",
-	"inactive_file",
-	"active_file",
+	"nr_anon_mapped",
+	"nr_file_pages",
+	"nr_kernel_stack_kb",
+	"nr_shmem",
+	"nr_file_mapped",
+	"nr_file_dirty",
+	"nr_writeback",
+	"nr_file_thps",
+	"nr_anon_thps",
+	"nr_inactive_anon",
+	"nr_active_anon",
+	"nr_inactive_file",
+	"nr_active_file",
+	"nr_unevictable",
+	"nr_slab_reclaimable_b",
+	"nr_slab_unreclaimable_b",
+	"workingset_refault_anon",
+	"workingset_refault_file",
+	"workingset_activate_anon",
+	"workingset_activate_file",
+	"workingset_restore_anon",
+	"workingset_restore_file",
+	"workingset_nodereclaim",
+	"memcg_kmem",
+	"memcg_sock",
+	"memcg_zswap_b",
+	"memcg_zswapped",
+	"pgscan_kswapd",
+	"pgscan_direct",
+	"pgscan_khugepaged",
+	"pgscan_proactive",
+	"pgsteal_kswapd",
+	"pgsteal_direct",
+	"pgsteal_khugepaged",
+	"pgsteal_proactive",
+	"pgfault",
+	"pgmajfault",
+	"pgrefill",
+	"pgactivate",
+	"pgdeactivate",
+	"pglazyfree",
+	"pglazyfreed",
+	"thp_fault_alloc",
+	"thp_collapse_alloc",
+	"(sentinel)"
 };
 
 int main()
@@ -36,10 +118,8 @@ int main()
 	}
 
 	skel->rodata->nr_items = sizeof(items) / sizeof(items[0]);
-	printf("nr_items:%zu\n", skel->rodata->nr_items);
 
 	size_t sz_map = sizeof(skel->data_items->items[0]) * skel->rodata->nr_items;
-	printf("desired map size:%zu\n", sz_map);
 	size_t sz_map_final;
 
 	struct bpf_map *map = skel->maps.data_items;
@@ -55,7 +135,6 @@ int main()
 	}
 
 	sz_map = sizeof(skel->data_results->results[0]) * skel->rodata->nr_items;
-	printf("desired map size:%zu\n", sz_map);
 	map = skel->maps.data_results;
 	ret = bpf_map__set_value_size(map, sz_map);
 	if (ret) {
@@ -69,7 +148,7 @@ int main()
 	}
 
 	int i;
-	for (i = 0; i < skel->rodata->nr_items; i++)
+	for (i = 0; i < skel->rodata->nr_items - 1; i++)
 		skel->data_items->items[i] = items[i];
 
 	ret = memcgstat_bpf__load(skel);
@@ -128,7 +207,7 @@ int main()
 		goto cleanup;
 	}
 
-	for (i = 0; i < skel->rodata->nr_items; i++) {
+	for (i = 0; i < skel->rodata->nr_items - 1; i++) {
 		printf("%s:%d\n", names[i], values[i]);
 	}
 
