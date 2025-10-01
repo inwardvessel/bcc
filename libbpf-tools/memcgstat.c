@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 // Copyright (c) 2025 Meta Platforms, Inc. and affiliates.
-#include <stdio.h>
 #include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
+
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+
 #include "memcgstat.h"
 #include "memcgstat.skel.h"
 
+/* items to be queried */
 static enum memcg_item items[] = {
 	USER_NR_ANON_MAPPED,
 	USER_NR_FILE_PAGES,
@@ -56,6 +60,7 @@ static enum memcg_item items[] = {
 	USER_ITEM_COUNT
 };
 
+/* names corresponding to query items */
 static char *names[] = {
 	"nr_anon_mapped",
 	"nr_file_pages",
@@ -104,10 +109,29 @@ static char *names[] = {
 	"(sentinel)"
 };
 
-int main()
+static int results[USER_ITEM_COUNT];
+
+int main(int argc, char *argv[])
 {
-	int ret = 0;
 	struct memcgstat_bpf *skel;
+	struct bpf_map *map;
+	struct bpf_link *link;
+	size_t sz_items_desired, sz_items_final;
+	size_t sz_results_desired, sz_results_final;
+	size_t nr_items;
+	int ret, n, i;
+	int cgroup_fd;
+	char *cgroup_path;
+
+	if (argc != 3) {
+		fprintf(stderr, "USAGE: %s <cgroup_path> <N>\n", argv[0]);
+
+		return 1;
+	}
+
+	cgroup_path = argv[1];
+	n = atoi(argv[2]);
+	nr_items = sizeof(items) / sizeof(items[0]);
 
 	skel = memcgstat_bpf__open();
 	if (!skel) {
@@ -117,52 +141,53 @@ int main()
 		goto out;
 	}
 
-	skel->rodata->nr_items = sizeof(items) / sizeof(items[0]);
-
-	size_t sz_map = sizeof(skel->data_items->items[0]) * skel->rodata->nr_items;
-	size_t sz_map_final;
-
-	struct bpf_map *map = skel->maps.data_items;
-	ret = bpf_map__set_value_size(map, sz_map);
+	/* resize array of items to be queried */
+	map = skel->maps.data_items;
+	sz_items_desired = sizeof(skel->data_items->items[0]) * nr_items;
+	ret = bpf_map__set_value_size(map, sz_items_desired);
 	if (ret) {
 		goto cleanup_skel;
 	}
-	skel->data_items = bpf_map__initial_value(skel->maps.data_items, &sz_map_final);
-	if (sz_map_final != sz_map) {
-		fprintf(stderr, "mismatched size\n");
+	skel->data_items = bpf_map__initial_value(skel->maps.data_items, &sz_items_final);
+	if (sz_items_final != sz_items_desired) {
+		fprintf(stderr, "failed to resize items map\n");
 		ret = 1;
+
 		goto cleanup_skel;
 	}
 
-	sz_map = sizeof(skel->data_results->results[0]) * skel->rodata->nr_items;
+	/* resize array that will store query results */
+	sz_results_desired = sizeof(skel->data_results->results[0]) * nr_items;
 	map = skel->maps.data_results;
-	ret = bpf_map__set_value_size(map, sz_map);
+	ret = bpf_map__set_value_size(map, sz_results_desired);
 	if (ret) {
 		goto cleanup_skel;
 	}
-	skel->data_results = bpf_map__initial_value(skel->maps.data_results, &sz_map_final);
-	if (sz_map_final != sz_map) {
-		fprintf(stderr, "mismatched size\n");
+	skel->data_results = bpf_map__initial_value(skel->maps.data_results, &sz_results_final);
+	if (sz_results_final != sz_results_desired) {
+		fprintf(stderr, "failed to resize results map\n");
 		ret = 1;
+
 		goto cleanup_skel;
 	}
 
-	int i;
-	for (i = 0; i < skel->rodata->nr_items - 1; i++)
+	/* store items to be queried in bpf array */
+	for (i = 0; i < nr_items - 1; i++)
 		skel->data_items->items[i] = items[i];
 
 	ret = memcgstat_bpf__load(skel);
 	if (ret) {
 		fprintf(stderr, "failed to load bpf object\n");
 		ret = 1;
+
 		goto cleanup_skel;
 	}
 
-	char *path = "/sys/fs/cgroup";
-	int cgroup_fd = open(path, O_RDONLY);
+	cgroup_fd = open(cgroup_path, O_RDONLY);
 	if (cgroup_fd < 0) {
 		perror("open");
 		ret = cgroup_fd;
+
 		goto cleanup_skel;
 	}
 
@@ -174,42 +199,44 @@ int main()
 	opts.link_info = &linfo;
 	opts.link_info_len = sizeof(linfo);
 
-	struct bpf_link *link = bpf_program__attach_iter(skel->progs.query, &opts);
+	link = bpf_program__attach_iter(skel->progs.query, &opts);
 	if (!link) {
 		fprintf(stderr, "link\n");
 		ret = 1;
-		goto cleanup_skel;
+		goto cleanup_cgroup_fd;
 	}
 
-	int iter_fd = bpf_iter_create(bpf_link__fd(link));
+for (i = 0; i < n; i++) {
+	int iter_fd;
+	ssize_t bytes;
+
+	iter_fd = bpf_iter_create(bpf_link__fd(link));
 	if (iter_fd < 0) {
 		fprintf(stderr, "create\n");
 		ret = 1;
 		goto cleanup_link;
 	}
 
-	size_t sz = sizeof(int) * skel->rodata->nr_items;
-	int *values = malloc(sz);
-	if (!values) {
-		fprintf(stderr, "no mem\n");
-		return 1;
-	}
-
-	ssize_t bytes = read(iter_fd, values, sz);
+	/* invoke iter program */
+	bytes = read(iter_fd, results, 0);
 	if (bytes < 0) {
+		close(iter_fd);
 		perror("read");
 		ret = bytes;
-		goto cleanup;
+		goto cleanup_link;
 	}
 
-	for (i = 0; i < skel->rodata->nr_items - 1; i++) {
+	close(iter_fd);
+
+	for (i = 0; i < nr_items - 1; i++) {
 		printf("%s:%lu\n", names[i], skel->data_results->results[i]);
 	}
+}
 
-cleanup:
-	close(iter_fd);
 cleanup_link:
 	bpf_link__destroy(link);
+cleanup_cgroup_fd:
+	close(cgroup_fd);
 cleanup_skel:
 	memcgstat_bpf__destroy(skel);
 out:

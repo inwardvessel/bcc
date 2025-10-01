@@ -13,7 +13,6 @@ extern unsigned long memcg_stat_fetch(struct cgroup *cgrp, enum memcg_stat_item 
 extern unsigned long memcg_node_stat_fetch(struct cgroup *cgrp, enum node_stat_item item) __ksym;
 extern unsigned long memcg_vm_event_fetch(struct cgroup *cgrp, enum vm_event_item item) __ksym;
 
-const volatile size_t nr_items;
 enum memcg_item items[1] SEC(".data.items");
 long results[1] SEC(".data.results");
 
