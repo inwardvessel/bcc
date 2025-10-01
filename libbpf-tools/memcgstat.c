@@ -122,9 +122,10 @@ int main(int argc, char *argv[])
 	int ret, n, i;
 	int cgroup_fd;
 	char *cgroup_path;
+	bool debug = false;
 
-	if (argc != 3) {
-		fprintf(stderr, "USAGE: %s <cgroup_path> <N>\n", argv[0]);
+	if (argc < 3) {
+		fprintf(stderr, "USAGE: %s <cgroup_path> <N> <debug>\n", argv[0]);
 
 		return 1;
 	}
@@ -132,6 +133,9 @@ int main(int argc, char *argv[])
 	cgroup_path = argv[1];
 	n = atoi(argv[2]);
 	nr_items = sizeof(items) / sizeof(items[0]);
+
+	if (argc > 3)
+		debug = true;
 
 	skel = memcgstat_bpf__open();
 	if (!skel) {
@@ -228,8 +232,10 @@ for (i = 0; i < n; i++) {
 
 	close(iter_fd);
 
-	for (i = 0; i < nr_items - 1; i++) {
-		printf("%s:%lu\n", names[i], skel->data_results->results[i]);
+	if (debug) {
+		for (i = 0; i < nr_items - 1; i++) {
+			printf("%s:%lu\n", names[i], skel->data_results->results[i]);
+		}
 	}
 }
 
